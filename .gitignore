@@ -1,0 +1,76 @@
+# =============================================================================
+# WIS+ — local-first workshop manual tool (vibe-coded)
+# This repo must stay cleanly committable. Generated/binary/user data is ignored.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.sqlite
+*.sqlite3
+*.db
+
+# ---------------------------------------------------------------------------
+# Node / frontend (ui/)
+# ---------------------------------------------------------------------------
+node_modules/
+dist/
+build/
+.next/
+.cache/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+
+# Rust / Tauri (ui/src-tauri/)
+ui/src-tauri/target/
+target/
+Cargo.lock.bak
+
+# ---------------------------------------------------------------------------
+# Generated databases & local data (keep the folder, ignore the contents)
+# ---------------------------------------------------------------------------
+data/*.sqlite
+data/*.sqlite3
+data/*.db
+data/*.sqlite-journal
+data/*.sqlite-wal
+data/*.sqlite-shm
+data/embeddings/
+data/cache/
+
+# Keep these placeholder files tracked even though their siblings are ignored.
+!data/.gitkeep
+!pdfs/.gitkeep
+
+# ---------------------------------------------------------------------------
+# Raw manual scans (large, proprietary PDFs — never commit)
+# ---------------------------------------------------------------------------
+pdfs/*.pdf
+
+# ---------------------------------------------------------------------------
+# Local user configuration & machine-specific state
+# ---------------------------------------------------------------------------
+user_config.json
+*.local.json
+.env
+.env.*
+
+# ---------------------------------------------------------------------------
+# OS / editor noise
+# ---------------------------------------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.swp
