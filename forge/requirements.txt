@@ -1,0 +1,38 @@
+# =============================================================================
+# WIS+  forge/requirements.txt
+# -----------------------------------------------------------------------------
+# Layer 1 (offline Windows ingestion) — heavy OCR + document-engineering deps.
+#
+# Target runtime: Python 3.12 on the Windows 11 build machine
+#                 (Ryzen 9 7900X, 12 cores / 32 GB RAM).
+#
+#   pip install -r forge/requirements.txt
+#
+# SYSTEM PREREQUISITES (not pip-installable):
+#   * Tesseract OCR 5.x binary on PATH  -> used by `pytesseract`.
+#       Windows: winget install Chocobo.TesseractOCR   (or the UB-Mannheim installer)
+#     If the binary is missing, forge/ocr_consensus.py degrades gracefully:
+#     Tesseract returns an empty token list and consensus runs on the other 2 engines.
+#   * `easyocr` requires a PyTorch build. On this CPU-only box install the CPU wheel:
+#       pip install torch --index-url https://download.pytorch.org/whl/cpu
+# =============================================================================
+
+# --- PDF rasterization / geometry (normalized-page renderer) -----------------
+pymupdf>=1.24,<2.0            # fitz — render pages, honor /Rotate + MediaBox
+
+# --- Image + numerical stack -------------------------------------------------
+numpy>=1.26,<3.0
+pillow>=10.0
+opencv-python-headless>=4.9   # headless: no GUI/X dependency (server/CI friendly)
+
+# --- OCR engines (3-way consensus) ------------------------------------------
+rapidocr-onnxruntime>=1.3     # engine 1 — onnxruntime, strong on degraded scans
+pytesseract>=0.3.10           # engine 2 — Tesseract 5 wrapper (needs system binary)
+easyocr>=1.7                  # engine 3 — deep-learning OCR (pulls torch; see above)
+
+# --- Data contracts / validation --------------------------------------------
+pydantic>=2.7                 # shared/models.py is Pydantic v2; forge reuses it
+
+# --- Network / retrieval (used by downstream VLM + embedding stages) ---------
+httpx>=0.27                   # async HTTP for the local Qwen3.8-27B VLM sidecar
+fastembed>=0.3                # float32 embeddings for semantic search (local model)
