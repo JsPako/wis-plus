@@ -1,0 +1,8 @@
+# WIS+ backend runtime — ultra-lightweight local API (no PyTorch, no LLM).
+# Target: Arch Linux / Windows 11, < 120 MB RAM resident.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pymupdf>=1.24
+fastembed>=0.4
+numpy>=1.26
+pydantic>=2.7
