@@ -1,0 +1,32 @@
+{
+  "name": "wisplus-ui",
+  "private": true,
+  "version": "0.4.0",
+  "type": "module",
+  "description": "WIS+ desktop frontend — React Native (Web) shell inside Tauri v2 for the W201 workshop assistant.",
+  "scripts": {
+    "dev": "tauri dev",
+    "web": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "app:build": "tauri build",
+    "icon": "tauri icon ../assets/app-icon.png"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-native-reanimated": "^3.16.1",
+    "react-native-web": "^0.20.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.2",
+    "typescript": "~5.6.2",
+    "vite": "^5.4.8"
+  }
+}

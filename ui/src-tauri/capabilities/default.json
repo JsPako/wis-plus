@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the WIS+ main window. The app talks to the local Python sidecar over plain HTTP on 127.0.0.1, so no extra Tauri plugin permissions are needed.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
