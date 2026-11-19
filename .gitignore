@@ -60,6 +60,10 @@ pdfs/*.pdf
 # ---------------------------------------------------------------------------
 # Local user configuration & machine-specific state
 # ---------------------------------------------------------------------------
+# OCR model caches (auto-downloaded by easyocr / unsloth tooling)
+.EasyOCR/
+unsloth-tmp/
+
 user_config.json
 *.local.json
 .env
