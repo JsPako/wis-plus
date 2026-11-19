@@ -28,8 +28,10 @@ Pipeline (per PDF, in strict Task order):
      normalized bounding box in the OCR token list, procedure text is expanded
      with ``shared/synonyms.json`` terms, and 384-dim embeddings are generated
      with fastembed (BAAI/bge-small-en-v1.5).
-  7. documents / pages / procedures / torque_specs rows are written; the FTS5
-     index fills itself via the schema triggers.
+  7. documents / pages / procedures / torque_specs rows are written - exact
+     file-hash duplicates are skipped up front and procedure-level overlap is
+     resolved (cleaner copy kept, secondary copies hidden from search) - and
+     the FTS5 index fills itself via the schema triggers.
 
 Only the standard library + the Task 1/2 forge modules + httpx/fastembed are
 used here — no new dependencies.
@@ -107,6 +109,9 @@ EMBEDDING_DIM = 384
 class RunStats:
     pdfs_total: int = 0
     pdfs_skipped_existing: int = 0
+    pdfs_skipped_hash: int = 0        # exact SHA-256 duplicates (different filename)
+    procedures_dedup_replaced: int = 0   # weaker existing copy updated in place
+    procedures_dedup_suppressed: int = 0 # secondary copies hidden from search
     wis_docs: int = 0
     haynes_docs: int = 0
     pages_processed: int = 0
@@ -286,20 +291,57 @@ def upsert_page(
     return int(cur.lastrowid)
 
 
-def insert_procedure(conn: sqlite3.Connection, page_id: int, rec: ProcedureRecord) -> int:
+def insert_procedure(
+    conn: sqlite3.Connection,
+    page_id: int,
+    rec: ProcedureRecord,
+    ocr_confidence: Optional[float] = None,
+    is_duplicate: int = 0,
+    duplicate_of: Optional[int] = None,
+) -> int:
     cur = conn.execute(
         "INSERT INTO procedures (page_id, category, subcategory, title, search_text,"
         " engine_variants, transmission_variants, tools_required, removal_steps,"
-        " installation_steps, general_tips, embedding_dim)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " installation_steps, general_tips, embedding_dim, ocr_confidence,"
+        " is_duplicate, duplicate_of)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (page_id, rec.category, rec.subcategory, rec.title, rec.search_text,
          dump_json(rec.engine_variants), dump_json(rec.transmission_variants),
          dump_json([t.model_dump() for t in rec.tools_required]),
          dump_json([s.model_dump() for s in rec.removal_steps]),
          dump_json([s.model_dump() for s in rec.installation_steps]),
-         dump_json(rec.general_tips), None),
+         dump_json(rec.general_tips), None, ocr_confidence, is_duplicate, duplicate_of),
     )
     return int(cur.lastrowid)
+
+
+def update_procedure_content(
+    conn: sqlite3.Connection,
+    procedure_id: int,
+    page_id: int,
+    rec: ProcedureRecord,
+    ocr_confidence: Optional[float],
+) -> None:
+    """Overwrite an existing procedure row with a cleaner re-extraction of the
+    same workshop job (dedup 'replace' path).  The FTS trigger keeps the
+    index in sync automatically."""
+    conn.execute(
+        "UPDATE procedures SET page_id = ?, category = ?, subcategory = ?, title = ?,"
+        " search_text = ?, engine_variants = ?, transmission_variants = ?,"
+        " tools_required = ?, removal_steps = ?, installation_steps = ?,"
+        " general_tips = ?, ocr_confidence = ? WHERE id = ?",
+        (page_id, rec.category, rec.subcategory, rec.title, rec.search_text,
+         dump_json(rec.engine_variants), dump_json(rec.transmission_variants),
+         dump_json([t.model_dump() for t in rec.tools_required]),
+         dump_json([s.model_dump() for s in rec.removal_steps]),
+         dump_json([s.model_dump() for s in rec.installation_steps]),
+         dump_json(rec.general_tips), ocr_confidence, procedure_id),
+    )
+
+
+def clear_torque_specs(conn: sqlite3.Connection, procedure_id: int) -> None:
+    """Drop a procedure's torque rows (re-inserted right after an in-place update)."""
+    conn.execute("DELETE FROM torque_specs WHERE procedure_id = ?", (procedure_id,))
 
 
 def insert_torque_spec(
@@ -487,6 +529,227 @@ def embed_texts(texts: list[str]) -> list["np.ndarray"]:
 # ---------------------------------------------------------------------------
 # Per-PDF pipeline
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Procedure-level deduplication (overlapping WIS PDFs)
+#
+# A newer 190E scan may already be covered by an existing chapter PDF, or two
+# files may describe the same workshop job.  Rules:
+#   * exact file duplicates are skipped earlier, in ``process_pdf``;
+#   * here we match procedures within ONE manual type only - WIS and
+#     Haynes/Supplement copies of the same job are deliberately kept apart so
+#     factory data and DIY notes stay cross-referenceable;
+#   * a match is (a) identical normalized (wis_doc_code, title), or
+#     (b) >= PROC_JACCARD_THRESHOLD Jaccard word overlap on the steps for
+#     compatible engine codes.
+#   * the cleaner copy wins: higher OCR-consensus confidence, tie-broken by
+#     more torque specs.  The loser is kept in the DB (provenance) but flagged
+#     is_duplicate=1 so Spotlight Search never returns it twice.
+# ---------------------------------------------------------------------------
+PROC_JACCARD_THRESHOLD = 0.88
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def wis_doc_code(section: Optional[str], subsection: Optional[str]) -> str:
+    """WIS document code, e.g. '01-03'; '' when the source has none (Haynes)."""
+    if section and subsection:
+        return f"{section}-{subsection}"
+    return section or ""
+
+
+def _norm_title(title: str) -> str:
+    return " ".join(_WORD_RE.findall((title or "").casefold()))
+
+
+def _iter_step_texts(steps) -> list[str]:
+    out: list[str] = []
+    for s in steps or []:
+        if isinstance(s, dict):
+            out.append(str(s.get("text") or ""))
+            tip = s.get("tip")
+        else:
+            out.append(s.text)
+            tip = s.tip
+        if tip:
+            out.append(str(tip))
+    return out
+
+
+def _step_words(steps) -> set[str]:
+    words: set[str] = set()
+    for text in _iter_step_texts(steps):
+        words.update(_WORD_RE.findall(text.casefold()))
+    return words
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    union = len(a | b)
+    return len(a & b) / union if union else 0.0
+
+
+def _engines_compatible(a, b) -> bool:
+    sa = {str(e).strip().upper() for e in (a or [])}
+    sb = {str(e).strip().upper() for e in (b or [])}
+    if not sa or not sb or "ALL" in sa or "ALL" in sb:
+        return True
+    return bool(sa & sb)
+
+
+def _bbox_overlap(box, other) -> bool:
+    ax0, ay0, ax1, ay1 = box
+    bx0, by0, bx1, by1 = (other.x0, other.y0, other.x1, other.y1) if hasattr(other, "x0") else other
+    return ax0 < bx1 and bx0 < ax1 and ay0 < by1 and by0 < ay1
+
+
+def procedure_consensus_confidence(tokens: list[dict], rec: ProcedureRecord) -> float:
+    """Mean OCR-consensus confidence for one structured procedure.
+
+    Prefers tokens whose bbox overlaps a step of this procedure (the text the
+    VLM actually read); falls back to the page-wide mean when no step bboxes
+    are available.  0.0 when the page produced no tokens.
+    """
+    boxes = [s.bbox for s in (*rec.removal_steps, *rec.installation_steps) if s.bbox is not None]
+    all_conf: list[float] = []
+    hit_conf: list[float] = []
+    for t in tokens or []:
+        conf = float(t.get("confidence") or 0.0)
+        all_conf.append(conf)
+        box = t.get("box")
+        if boxes and box is not None and any(_bbox_overlap(box, b) for b in boxes):
+            hit_conf.append(conf)
+    pool = hit_conf or all_conf
+    return sum(pool) / len(pool) if pool else 0.0
+
+
+def _procedure_entry(proc_id: int, source_type: str, doc_code: str, rec: ProcedureRecord,
+                     confidence: float, torque_count: int, is_dup: bool = False) -> dict:
+    return {
+        "proc_id": proc_id,
+        "source_type": source_type,
+        "doc_code": doc_code,
+        "norm_title": _norm_title(rec.title),
+        "engines": {str(e).strip().upper() for e in rec.engine_variants},
+        "step_words": _step_words(rec),
+        "confidence": confidence,
+        "torque_count": torque_count,
+        "is_dup": is_dup,
+    }
+
+
+def _dedup_decision(existing: dict, new_confidence: float, new_torque_count: int) -> str:
+    """'replace' when the new copy is strictly cleaner (higher consensus
+    confidence, tie-broken by more torque specs); else 'suppress'."""
+    old_conf = existing["confidence"] or 0.0
+    if new_confidence > old_conf + 1e-9:
+        return "replace"
+    if abs(new_confidence - old_conf) <= 1e-9 and new_torque_count > existing["torque_count"]:
+        return "replace"
+    return "suppress"
+
+
+class ProcedureDedupIndex:
+    """Registry of procedures seen so far, for overlap detection.
+
+    The schema rebuilds the DB from scratch each run, so the registry is seeded
+    from the (normally empty) ``procedures`` table at start-up and grows as rows
+    are inserted - no full-table scan per insert.  Suppressed secondary copies
+    are kept for provenance but never matched against.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._entries: list[dict] = []
+        self._title_index: dict[tuple[str, str], list[int]] = {}
+        self._by_proc_id: dict[int, int] = {}
+        self._seed(conn)
+
+    def _seed(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            "SELECT p.id, d.source_type, d.wis_section, d.wis_subsection, p.title,"
+            " p.engine_variants, p.removal_steps, p.installation_steps,"
+            " p.ocr_confidence, p.is_duplicate"
+            " FROM procedures p"
+            " JOIN pages pg ON pg.id = p.page_id"
+            " JOIN documents d ON d.id = pg.document_id"
+            " ORDER BY p.id"
+        ).fetchall()
+        torque_counts = dict(conn.execute(
+            "SELECT procedure_id, COUNT(*) FROM torque_specs GROUP BY procedure_id"
+        ))
+        for r in rows:
+            removal = json.loads(r["removal_steps"] or "[]")
+            installation = json.loads(r["installation_steps"] or "[]")
+            self.add({
+                "proc_id": int(r["id"]),
+                "source_type": r["source_type"],
+                "doc_code": wis_doc_code(r["wis_section"], r["wis_subsection"]),
+                "norm_title": _norm_title(r["title"]),
+                "engines": {str(e).strip().upper() for e in json.loads(r["engine_variants"] or "[]")},
+                "step_words": _step_words(removal + installation),
+                "confidence": float(r["ocr_confidence"] or 0.0),
+                "torque_count": int(torque_counts.get(int(r["id"]), 0)),
+                "is_dup": bool(r["is_duplicate"]),
+            })
+
+    def add(self, entry: dict) -> None:
+        idx = len(self._entries)
+        self._entries.append(entry)
+        self._by_proc_id[entry["proc_id"]] = idx
+        if not entry["is_dup"]:
+            key = (entry["source_type"], entry["norm_title"])
+            self._title_index.setdefault(key, []).append(idx)
+
+    def upgrade(self, entry: dict, rec: ProcedureRecord, confidence: float, torque_count: int) -> None:
+        """Refresh a canonical entry after its row was updated in place."""
+        idx = self._by_proc_id[entry["proc_id"]]
+        old_key = (entry["source_type"], entry["norm_title"])
+        new_norm = _norm_title(rec.title)
+        if old_key in self._title_index:
+            try:
+                self._title_index[old_key].remove(idx)
+            except ValueError:
+                pass
+            if not self._title_index[old_key]:
+                del self._title_index[old_key]
+        entry.update({
+            "norm_title": new_norm,
+            "engines": {str(e).strip().upper() for e in rec.engine_variants},
+            "step_words": _step_words(rec),
+            "confidence": confidence,
+            "torque_count": torque_count,
+        })
+        if not entry["is_dup"]:
+            self._title_index.setdefault((entry["source_type"], new_norm), []).append(idx)
+
+    def find_duplicate(
+        self,
+        source_type: str,
+        doc_code: str,
+        norm_title: str,
+        engines,
+        step_words: set[str],
+    ) -> tuple[Optional[dict], Optional[str]]:
+        """Return ``(entry, reason)`` for an overlapping canonical procedure."""
+        for idx in self._title_index.get((source_type, norm_title), []):
+            e = self._entries[idx]
+            if not e["is_dup"] and e["doc_code"] == doc_code:
+                return e, f"same WIS doc code '{doc_code or '-'}' + normalized title"
+        best: Optional[dict] = None
+        best_j = 0.0
+        for e in self._entries:
+            if e["is_dup"] or e["source_type"] != source_type:
+                continue
+            if not _engines_compatible(engines, e["engines"]):
+                continue
+            j = _jaccard(step_words, e["step_words"])
+            if j >= PROC_JACCARD_THRESHOLD and j > best_j:
+                best, best_j = e, j
+        if best is not None:
+            return best, f"Jaccard step overlap {best_j:.2f} >= {PROC_JACCARD_THRESHOLD}"
+        return None, None
+
+
 async def process_pdf(
     conn: sqlite3.Connection,
     pdf_path: Path,
@@ -497,12 +760,26 @@ async def process_pdf(
     vlm_concurrency: int,
     max_pages: Optional[int],
     stats: RunStats,
+    dedup_index: ProcedureDedupIndex,
+    reset_cache: bool = False,
 ) -> None:
     file_name = pdf_path.name
     section, subsection = parse_wis_filename(file_name)
     source_type = "WIS" if (section is not None and subsection is not None) else "HAYNES"
     checksum = sha256_file(pdf_path)
     doc_hash16 = checksum[:16]   # cache-key truncation; full hash stored in DB
+    doc_code = wis_doc_code(section, subsection)
+
+    if not reset_cache:
+        prev = conn.execute(
+            "SELECT filename FROM documents WHERE checksum_sha256 = ? ORDER BY id LIMIT 1",
+            (checksum,),
+        ).fetchone()
+        if prev is not None and prev["filename"] != file_name:
+            stats.pdfs_skipped_hash += 1
+            print(f"[skip] {file_name}: exact duplicate of {prev['filename']} "
+                  f"(sha256 {doc_hash16}...)")
+            return
 
     with pymupdf.open(str(pdf_path)) as doc:
         page_count = len(doc)
@@ -653,10 +930,45 @@ async def process_pdf(
                     installation_steps=installation,
                     general_tips=payload["general_tips"],
                 )
-                proc_id = insert_procedure(conn, page_id, rec)
-                stats.procedures_extracted += 1
+                confidence = procedure_consensus_confidence(tokens, rec)
+                new_torque_count = len(payload["torque_specs"])
+                existing, reason = dedup_index.find_duplicate(
+                    source_type=source_type,
+                    doc_code=doc_code,
+                    norm_title=_norm_title(rec.title),
+                    engines=rec.engine_variants,
+                    step_words=_step_words(rec),
+                )
+                suppressed = False
+                if existing is None:
+                    proc_id = insert_procedure(conn, page_id, rec, ocr_confidence=confidence)
+                    stats.procedures_extracted += 1
+                    dedup_index.add(_procedure_entry(
+                        proc_id, source_type, doc_code, rec, confidence, new_torque_count))
+                elif _dedup_decision(existing, confidence, new_torque_count) == "replace":
+                    proc_id = int(existing["proc_id"])
+                    update_procedure_content(conn, proc_id, page_id, rec, confidence)
+                    clear_torque_specs(conn, proc_id)
+                    stats.procedures_dedup_replaced += 1
+                    dedup_index.upgrade(existing, rec, confidence, new_torque_count)
+                    print(f"[dedup] {file_name}: '{rec.title}' is cleaner than existing "
+                          f"procedure #{proc_id} (confidence {confidence:.2f} vs "
+                          f"{existing['confidence'] or 0.0:.2f}, {new_torque_count} vs "
+                          f"{existing['torque_count']} torque specs) - updated in place [{reason}]")
+                else:
+                    proc_id = insert_procedure(
+                        conn, page_id, rec, ocr_confidence=confidence,
+                        is_duplicate=1, duplicate_of=int(existing["proc_id"]))
+                    stats.procedures_dedup_suppressed += 1
+                    suppressed = True
+                    dedup_index.add(_procedure_entry(
+                        proc_id, source_type, doc_code, rec, confidence,
+                        new_torque_count, is_dup=True))
+                    print(f"[dedup] {file_name}: '{rec.title}' overlaps existing "
+                          f"procedure #{existing['proc_id']} [{reason}] - stored as "
+                          f"secondary copy (hidden from Spotlight search)")
                 stats.steps_indexed += len(removal) + len(installation)
-                if search_text:
+                if search_text and not suppressed:
                     proc_ids_for_embed.append((proc_id, search_text))
 
                 for trow in _torque_rows(payload, tokens, proc_id, page_id):
@@ -718,10 +1030,14 @@ def print_summary(stats: RunStats, db_path: Path, elapsed: float) -> None:
     print(f" PDFs processed ............ {stats.pdfs_total:>5}   (WIS: {stats.wis_docs}, HAYNES: {stats.haynes_docs})")
     if stats.pdfs_skipped_existing:
         print(f" Skipped (duplicate) ......... {stats.pdfs_skipped_existing:>5}")
+    if stats.pdfs_skipped_hash:
+        print(f" Skipped (exact file hash) ... {stats.pdfs_skipped_hash:>5}")
     print(f" Pages processed ............. {stats.pages_processed:>5}")
     print(f"   boilerplate skipped ....... {stats.boilerplate_skipped:>5}   (covers / TOC / index)")
     print(f"   spec tables / diagrams .... {stats.spec_tables:>3} / {stats.diagrams}")
     print(f" Procedures extracted ........ {stats.procedures_extracted:>5}")
+    if stats.procedures_dedup_replaced or stats.procedures_dedup_suppressed:
+        print(f"   procedure dedup ........... replaced {stats.procedures_dedup_replaced:>3}   suppressed {stats.procedures_dedup_suppressed:>3} (secondary copies hidden from search)")
     print(f"   steps indexed ............. {stats.steps_indexed:>5}")
     print(f" Torque specs indexed ........ {stats.torque_specs_indexed:>5}   (exact bbox matched: {stats.torque_bboxes_matched})")
     print(f" Disputed regions ............ {stats.disputed_regions_total:>5}   (VLM resolutions: {stats.disputed_resolutions})")
@@ -765,6 +1081,7 @@ def run(args: argparse.Namespace) -> int:
     conn = init_db(db_path)
     stats = RunStats()
     synonyms = load_synonyms()
+    dedup_index = ProcedureDedupIndex(conn)
     pools_fns = _make_engine_pools()
 
     try:
@@ -778,6 +1095,8 @@ def run(args: argparse.Namespace) -> int:
                             vlm_concurrency=args.vlm_concurrency,
                             max_pages=args.max_pages,
                             stats=stats,
+                            reset_cache=getattr(args, "reset_cache", False),
+                            dedup_index=dedup_index,
                         )
                     except Exception as e:
                         # One bad PDF must not kill the whole batch; the VLM

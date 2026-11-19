@@ -22,6 +22,7 @@ CREATE TABLE documents (
     checksum_sha256 TEXT    NULL                      -- content hash for re-ingest detection
 );
 CREATE INDEX idx_documents_source ON documents(source_type, wis_section, wis_subsection);
+CREATE INDEX idx_documents_checksum ON documents(checksum_sha256);
 
 -- -----------------------------------------------------------------------------
 -- pages: one row per scanned page of a document
@@ -62,6 +63,11 @@ CREATE TABLE procedures (
     search_text             TEXT    NOT NULL DEFAULT '',     -- denormalized: steps+tools+tips+synonyms (FTS source)
     embedding               BLOB    NULL,                     -- float32 little-endian vector
     embedding_dim           INTEGER NULL,                     -- len(embedding) as Python int
+    ocr_confidence          REAL    NULL,                     -- mean OCR-consensus confidence of this procedure's source text
+    is_duplicate            INTEGER NOT NULL DEFAULT 0 CHECK (is_duplicate IN (0,1)),
+                                                                     -- 1 = secondary copy of a WIS procedure already covered by another source PDF (hidden from Spotlight Search)
+    duplicate_of            INTEGER NULL REFERENCES procedures(id) ON DELETE SET NULL,
+                                                                     -- canonical row id when is_duplicate = 1
     created_at              TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_procedures_page       ON procedures(page_id);
@@ -135,4 +141,6 @@ CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-INSERT INTO meta(key, value) VALUES ('schema_version', '1');
+-- v2: procedures.ocr_confidence / is_duplicate / duplicate_of + documents checksum index
+--      (procedure-level deduplication; see forge/build_db.py).
+INSERT INTO meta(key, value) VALUES ('schema_version', '2');

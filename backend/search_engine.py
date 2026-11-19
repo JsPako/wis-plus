@@ -100,6 +100,9 @@ class HybridSearchEngine:
         self._lock = threading.Lock()               # serializes sqlite access
         self._text_embedder = None                  # fastembed.TextEmbedding
         self._source_map: dict[int, str] = {}       # procedure_id -> source_type
+        #: True once _open_db confirms procedures.is_duplicate exists (schema v2+);
+        #: secondary duplicate copies are then hidden from every result path.
+        self._has_dup_flag = False
         self.families = load_synonym_families()
 
         #: Alias chips from the most recent :meth:`search` call (UI "Also matching").
@@ -138,8 +141,11 @@ class HybridSearchEngine:
         self._conn = conn
         self.db_loaded = True
 
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(procedures)")}
+        self._has_dup_flag = "is_duplicate" in cols
+        dup_where = " WHERE is_duplicate = 0" if self._has_dup_flag else ""
         self.procedure_count = int(
-            conn.execute("SELECT COUNT(*) AS n FROM procedures").fetchone()["n"]
+            conn.execute(f"SELECT COUNT(*) AS n FROM procedures{dup_where}").fetchone()["n"]
         )
 
         # procedure_id -> source_type (WIS / HAYNES), via pages -> documents.
@@ -162,9 +168,10 @@ class HybridSearchEngine:
     def _load_embeddings(self) -> None:
         """Pack every stored embedding BLOB into one contiguous float32 matrix."""
         assert self._conn is not None
+        dup_clause = " AND is_duplicate = 0" if self._has_dup_flag else ""
         rows = self._conn.execute(
             "SELECT id, embedding FROM procedures"
-            " WHERE embedding IS NOT NULL AND length(embedding) > 0"
+            " WHERE embedding IS NOT NULL AND length(embedding) > 0" + dup_clause
         ).fetchall()
         if not rows:
             return
@@ -320,12 +327,13 @@ class HybridSearchEngine:
         fts_hits: list[tuple[int, float, Optional[str]]] = []
         with self._lock:
             try:
+                dup_clause = " AND p.is_duplicate = 0" if self._has_dup_flag else ""
                 rows = self._conn.execute(
                     "SELECT p.id AS id, bm25(procedures_fts) AS rank,"
                     " snippet(procedures_fts, 3, '«', '»', ' … ', 16) AS snip"
                     " FROM procedures_fts"
                     " JOIN procedures AS p ON p.id = procedures_fts.rowid"
-                    " WHERE procedures_fts MATCH ?"
+                    " WHERE procedures_fts MATCH ?" + dup_clause +
                     " ORDER BY rank LIMIT ?",
                     (fts_expr, cand),
                 ).fetchall()
@@ -424,6 +432,8 @@ class HybridSearchEngine:
 
         where: list[str] = []
         params: list[str] = []
+        if self._has_dup_flag:
+            where.append("is_duplicate = 0")
         for col, filt in (("engine_variants", engine_filter), ("transmission_variants", transmission_filter)):
             if filt and filt.strip().upper() != "ALL":
                 where.append(f"({col} LIKE ? OR {col} LIKE '%\"ALL\"%')")
