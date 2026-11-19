@@ -458,8 +458,8 @@ async def process_pdf(
 
             tokens = consensus["tokens"]
             page_id = upsert_page(
-                conn, doc_id, i + 1, meta["orientation"], meta["width"],
-                meta["height"], page_type, consensus["text"],
+                conn, doc_id, i + 1, meta["orientation"], meta["norm_width"],
+                meta["norm_height"], page_type, consensus["text"],
             )
 
             if page_type != "procedure":
