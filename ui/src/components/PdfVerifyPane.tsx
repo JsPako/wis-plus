@@ -14,7 +14,10 @@
  *     to that exact page, smoothly scrolls so the target normalized
  *     `[x0, y0, x1, y1]` bounding box is centered in the viewport and draws
  *     an animated pulsing amber highlight over the exact printed text,
- *   • A verify-green "Verified on scan" chip while a highlight is active.
+ *   • A verify-green "Verified on scan" chip while a highlight is active,
+ *   • High-contrast **Scan Boost** toggle (`◐`) — requests the backend's
+ *     enhanced PNG (faded-digit / exploded-diagram boost, Task 10) without
+ *     touching page, zoom, scroll position or the active bbox highlight.
  *
  * All colors come from `@/theme/tokens` — no raw hex in this file.
  */
@@ -150,6 +153,8 @@ export default function PdfVerifyPane({
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [highlight, setHighlight] = useState<HighlightState | null>(null);
+  /** Task 10 — high-contrast Scan Boost (faded 80s microfiche scans). */
+  const [scanBoost, setScanBoost] = useState(false);
 
   const vScroll = useRef<ScrollView>(null);
   const hScroll = useRef<ScrollView>(null);
@@ -193,6 +198,13 @@ export default function PdfVerifyPane({
     offsetV.current = 0;
     offsetH.current = 0;
   }, [page, documentId]);
+
+  // Scan Boost toggle: only the image source changes — page, zoom, scroll
+  // offsets and the active bbox highlight are all preserved. Show the
+  // spinner until the enhanced/original PNG arrives.
+  useEffect(() => {
+    setLoading(true);
+  }, [scanBoost]);
 
   // Once the requested page's container is mounted (and again when the true
   // aspect ratio arrives after image load), center + light up the highlight.
@@ -288,6 +300,30 @@ export default function PdfVerifyPane({
           disabled={zoom >= ZOOM_MAX - 0.001}
           onPress={() => setZoom((z) => clampZoom(z * ZOOM_STEP))}
         />
+        <View style={styles.toolDivider} />
+        {/* Task 10 — high-contrast Scan Boost toggle */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={scanBoost ? 'Disable scan boost' : 'Enable scan boost'}
+          onPress={() => setScanBoost((b) => !b)}
+          style={({ pressed }) => [
+            styles.boostBtn,
+            scanBoost ? styles.boostBtnOn : styles.boostBtnOff,
+            pressed && { opacity: 0.85 },
+          ]}
+        >
+          <Text style={[styles.boostIcon, { color: scanBoost ? colors.textOnAmber : colors.textSecondary }]}>
+            ◐
+          </Text>
+          <Text
+            style={[
+              styles.boostLabel,
+              { color: scanBoost ? colors.textOnAmber : colors.textPrimary },
+            ]}
+          >
+            Scan Boost
+          </Text>
+        </Pressable>
       </View>
 
       {/* Verified chip ---------------------------------------------------- */}
@@ -341,8 +377,8 @@ export default function PdfVerifyPane({
               >
                 <View {...panResponder.panHandlers} style={{ width: dispW, height: dispH }}>
                   <Image
-                    key={`${documentId}:${page}:${reloadKey}`}
-                    source={{ uri: api.pdfPageUrl(documentId, page, SCAN_DPI) }}
+                    key={`${documentId}:${page}:${scanBoost ? 'boost' : 'raw'}:${reloadKey}`}
+                    source={{ uri: api.pdfPageUrl(documentId, page, SCAN_DPI, scanBoost) }}
                     style={{ width: dispW, height: dispH }}
                     resizeMode="stretch"
                     onLoad={onImgLoad}
@@ -405,6 +441,20 @@ const styles = {
   },
   toolBtnDisabled: { opacity: 0.35 },
   toolBtnText: { fontSize: 14, fontWeight: '700' as const, color: colors.textPrimary },
+  // Scan Boost toggle (Task 10) — tactile pill, accent-highlighted when active.
+  boostBtn: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 6,
+    height: 34,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    paddingHorizontal: spacing.sm + 2,
+  },
+  boostBtnOff: { backgroundColor: colors.bgElevated, borderColor: colors.hairlineStrong },
+  boostBtnOn: { backgroundColor: colors.accentPrimary, borderColor: colors.accentPrimary },
+  boostIcon: { fontSize: 15, fontWeight: '700' as const },
+  boostLabel: { fontSize: 12, fontWeight: '700' as const, letterSpacing: 0.3 },
   pageIndicator: {
     paddingHorizontal: spacing.md,
     paddingVertical: 6,

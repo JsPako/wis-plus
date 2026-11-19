@@ -110,7 +110,8 @@ export const api = {
   /** GET /api/procedures/{id} — full procedure incl. torque specs + bbox. */
   procedure: (procedureId: number) => request<ProcedureDetail>(`/api/procedures/${procedureId}`),
 
-  /** URL of the original-scan page PNG (LRU-cached server-side). Not a fetch — hand to <Image>. */
-  pdfPageUrl: (documentId: number, pageNumber: number, dpi = 180) =>
-    `${API_BASE}/api/pdf/${documentId}/page/${pageNumber}?dpi=${dpi}`,
+  /** URL of the original-scan page PNG (LRU-cached server-side). Not a fetch — hand to <Image>.
+   *  `enhance=true` requests the backend's high-contrast Scan Boost pipeline (Task 10). */
+  pdfPageUrl: (documentId: number, pageNumber: number, dpi = 180, enhance = false) =>
+    `${API_BASE}/api/pdf/${documentId}/page/${pageNumber}?dpi=${dpi}${enhance ? '&enhance=true' : ''}`,
 };
