@@ -77,8 +77,13 @@ from forge.pdf_normalizer import (  # noqa: E402
 from forge.ocr_consensus import (  # noqa: E402
     ENGINE_NAMES,
     OCRProgressTracker,
+    OcrConsensusCache,
+    TieBreakProgressTracker,
     compute_consensus,
+    detect_disputed_page,
     prewarm_easyocr_weights,
+    run_easyocr_engine,
+    run_fast_ocr_engines,
     run_ocr_engines,
     silence_easyocr_torch_warnings,
     verify_ocr_engines,
@@ -376,20 +381,16 @@ def _make_engine_pools() -> Optional[tuple[list[ProcessPoolExecutor], list]]:
     return pools, fns
 
 
-def _ocr_page_pinned(pools_fns, gray: "np.ndarray",
-                     progress=None) -> list[list[dict]]:
-    """Run all three engines on one preprocessed page via the pinned pools.
+def _fast_ocr_pinned(pools_fns, gray: "np.ndarray",
+                     progress=None) -> tuple[list[dict], list[dict]]:
+    """Stage 1: run ONLY the two fast engines (RapidOCR, Tesseract) on one page.
 
-    Returns token lists in engine order [rapidocr, tesseract, easyocr]; a failed
-    engine degrades to [] (mirrors run_ocr_engines semantics).
-
-    Completions are collected with ``as_completed`` so each engine updates the
-    optional ``progress`` tracker the moment it finishes — futures are the only
-    IPC boundary and all console output stays in this (main) process."""
+    EasyOCR is deliberately excluded from Stage 1 — it runs later as an
+    on-demand tie-breaker over disputed pages only (see process_pdf Stage 3)."""
     pools, fns = pools_fns
     t_submit = time.perf_counter()
-    futures = {pools[i].submit(fns[i], gray): i for i in range(len(fns))}
-    results: list[list[dict]] = [None] * len(fns)
+    futures = {pools[i].submit(fns[i], gray): i for i in range(2)}
+    results: list[list[dict]] = [None] * 2
     for fut in as_completed(futures):
         i = futures[fut]
         elapsed = time.perf_counter() - t_submit
@@ -402,7 +403,18 @@ def _ocr_page_pinned(pools_fns, gray: "np.ndarray",
             failed = True
         if progress is not None:
             progress.record(ENGINE_NAMES[i], elapsed, failed=failed)
-    return results
+    return results[0], results[1]
+
+
+def _easy_ocr_pinned(pools_fns, gray: "np.ndarray") -> list[dict]:
+    """Stage 3: run EasyOCR (pinned pool index 2) on one disputed page."""
+    pools, fns = pools_fns
+    try:
+        return pools[2].submit(fns[2], gray).result()
+    except Exception as e:
+        print(f"      [warn] EasyOCR tie-break failed on this page: {e}",
+              file=sys.stderr)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -513,44 +525,72 @@ async def process_pdf(
             stats.haynes_docs += 1
         print(f"[ingest] {file_name} ({source_type}, {page_count} pages)")
 
-        # ---- Pass 1: OCR (images freed immediately; tokens are tiny) --------
+        # ---- Pass 1 / Stage 1: fast dual-OCR (RapidOCR + Tesseract) ---------
         engine_results: list[list[list[dict]]] = []   # [page][engine] -> tokens
         metas: list[dict] = []
-        ocr_progress = OCRProgressTracker(total_pages=page_count, label=file_name)
+        ocr_progress = OCRProgressTracker(
+            total_pages=page_count, label=file_name,
+            stage="OCR-Fast", engine_names=("rapidocr", "tesseract"),
+        )
         for i in range(page_count):
             img, meta = render_normalized_page(doc, i, target_long_edge=target_long_edge)
             gray = preprocess_scan_for_ocr(img)
-            if pools_fns is not None:
-                try:
-                    eng = _ocr_page_pinned(pools_fns, gray, progress=ocr_progress)
-                except Exception as e:
-                    import traceback
-                    print(f"      [warn] OCR failed on {file_name} page {i+1}: "
-                          f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
-                          file=sys.stderr)
-                    eng = run_ocr_engines(gray, progress=ocr_progress)  # last-resort public API (raises if it also fails)
-            else:
-                try:
-                    eng = run_ocr_engines(gray, progress=ocr_progress)
-                except Exception as e:
-                    import traceback
-                    print(f"      [error] OCR failed on {file_name} page {i+1}: "
-                          f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
-                          file=sys.stderr)
-                    ocr_progress.finish()
-                    raise RuntimeError(
-                        f"OCR failed for {file_name} (page {i + 1}): {type(e).__name__}: {e}"
-                    ) from e
-            engine_results.append(eng)
+            try:
+                if pools_fns is not None:
+                    rapid_toks, tess_toks = _fast_ocr_pinned(
+                        pools_fns, gray, progress=ocr_progress)
+                else:
+                    rapid_toks, tess_toks = run_fast_ocr_engines(gray)
+            except Exception as e:
+                import traceback
+                print(f"      [error] OCR failed on {file_name} page {i+1}: "
+                      f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
+                      file=sys.stderr)
+                ocr_progress.finish()
+                raise RuntimeError(
+                    f"OCR failed for {file_name} (page {i + 1}): {type(e).__name__}: {e}"
+                ) from e
+            engine_results.append([rapid_toks, tess_toks, []])
             metas.append(meta)
             del img, gray
         ocr_progress.finish()  # idempotent: auto-fires on the last completion
+
+        # ---- Stage 2: disagreement detection (RapidOCR vs Tesseract) --------
+        disputed_pages: list[tuple[int, str]] = []
+        for i in range(page_count):
+            reason = detect_disputed_page(engine_results[i][0], engine_results[i][1])
+            if reason is not None:
+                disputed_pages.append((i, reason))
+
+        # ---- Stage 3: EasyOCR tie-breaker (disputed pages only, zero-safe) --
+        tie_progress = TieBreakProgressTracker(
+            total_pages=len(disputed_pages),
+            agreed_pages=page_count - len(disputed_pages),
+            label=file_name,
+        )
+        if disputed_pages:
+            for i, _reason in disputed_pages:
+                img, _ = render_normalized_page(doc, i, target_long_edge=target_long_edge)
+                gray = preprocess_scan_for_ocr(img)
+                del img
+                easy_toks = (
+                    _easy_ocr_pinned(pools_fns, gray) if pools_fns is not None
+                    else run_easyocr_engine(gray)
+                )
+                del gray
+                engine_results[i][2] = easy_toks
+                tie_progress.record()
+        # Always prints the final line — including "Skipped (0 disputed pages ...)"
+        # when nothing was in dispute.
+        tie_progress.finish()
 
         # ---- Repeating-margin boilerplate across the whole document ---------
         all_page_tokens = [
             [t for eng in er for t in eng] for er in engine_results
         ]
         repeating_margins = detect_repeating_margins(all_page_tokens)
+        doc_stem = pdf_path.stem
+        ocr_cache = OcrConsensusCache(Path(__file__).resolve().parent / ".cache")
 
         # ---- Pass 2: consensus + VLM + DB rows (streaming, one page at a time)
         proc_ids_for_embed: list[tuple[int, str]] = []  # (procedure_id, search_text)
@@ -560,12 +600,15 @@ async def process_pdf(
             filtered_engines = [
                 filter_boilerplate_tokens(eng, repeating_margins) for eng in engine_results[i]
             ]
-            consensus = compute_consensus(filtered_engines)
+            consensus = ocr_cache.load(doc_stem, i + 1)
+            if consensus is None:
+                consensus = compute_consensus(filtered_engines)
+                ocr_cache.save(doc_stem, i + 1, consensus)
             stats.disputed_regions_total += len(consensus["disputed_regions"])
 
             img, _ = render_normalized_page(doc, i, target_long_edge=target_long_edge)
             try:
-                payload = await vlm.enrich_page(doc_hash16, i + 1, img, consensus)
+                payload = await vlm.enrich_page(doc_stem, i + 1, img, consensus)
             finally:
                 del img
 
@@ -692,8 +735,28 @@ def print_summary(stats: RunStats, db_path: Path, elapsed: float) -> None:
     print(line + "\n")
 
 
+def _reset_caches(args: argparse.Namespace) -> None:
+    """Optionally clear the on-disk OCR/VLM checkpoint caches before a build."""
+    base = Path(__file__).resolve().parent / ".cache"
+    targets: list[str] = []
+    if getattr(args, "reset_cache", False):
+        targets += ["ocr", "vlm"]
+    elif getattr(args, "reset_vlm_cache", False):
+        targets += ["vlm"]
+    for name in targets:
+        d = base / name
+        removed = 0
+        if d.is_dir():
+            for f in d.iterdir():
+                if f.is_file():
+                    f.unlink(missing_ok=True)
+                    removed += 1
+        print(f"[cache] reset forge/.cache/{name}/ ({removed} file(s) removed)")
+
+
 def run(args: argparse.Namespace) -> int:
     _preflight(args)  # fails loudly (sys.exit(1)) on any missing dependency
+    _reset_caches(args)
     pdf_dir = Path(args.pdf_dir).resolve()
     db_path = Path(args.db_path)
     pdfs = sorted(pdf_dir.glob("*.pdf"))
@@ -766,6 +829,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                              "llama-server reachability check.")
     parser.add_argument("--strict", action="store_true",
                         help="Require all 3 OCR engines (full consensus) instead of any 2 of 3.")
+    parser.add_argument("--reset-cache", action="store_true",
+                        help="Delete ALL cached OCR + VLM results under forge/.cache/ "
+                             "(ocr/ and vlm/) before starting a fresh build.")
+    parser.add_argument("--reset-vlm-cache", action="store_true",
+                        help="Delete only the VLM cache (forge/.cache/vlm/) so cached "
+                             "OCR consensus is preserved while Qwen3.8-27B re-runs.")
     args = parser.parse_args(argv)
     return run(args)
 

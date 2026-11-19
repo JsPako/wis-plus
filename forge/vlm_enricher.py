@@ -7,14 +7,15 @@ Talks to a local ``llama.cpp`` llama-server exposing the OpenAI-compatible
 vision endpoint (default ``http://127.0.0.1:8080/v1/chat/completions``) hosting
 **Qwen3.8-27B**.  For every normalized page image it receives:
 
-* the base64 JPEG of the normalized scan (quality 88),
+* the base64 JPEG of the normalized scan (downscaled to 1280px, quality 82),
 * the consensus OCR text from ``forge.ocr_consensus.compute_consensus``, and
 * the list of ``disputed_regions`` (normalized boxes where the three OCR
   engines disagreed) so the VLM can visually resolve numbers it must not guess.
 
 The model is forced into deterministic structured output
 (``response_format={"type": "json_object"}``, low temperature,
-``reasoning_effort="low"``) and returns one JSON object per page describing the
+``chat_template_kwargs={"enable_thinking": False}``) and returns one JSON
+object per page describing the
 page type, the workshop procedure (Removal / Installation separated even when
 both sit on the same scanned page), required tools (spanner/socket sizes and
 Mercedes-Benz special-tool numbers), every torque value with its verbatim raw
@@ -104,29 +105,56 @@ _MERCEDES_SPECIAL_RE = re.compile(
 CACHE_VERSION = 1
 DEFAULT_LLM_URL = "http://127.0.0.1:8080/v1/chat/completions"
 DEFAULT_MODEL_NAME = "Qwen3.8-27B"   # llama.cpp ignores the name by default
-JPEG_QUALITY = 88                    # locked contract: quality 88
+JPEG_QUALITY = 82                    # VLM payload JPEG quality (downscaled image)
+# The VLM sees a smaller render than OCR (OCR keeps its 2200px pages): capping
+# the long edge at 1280px keeps dense workshop pages inside the vision context
+# so llama-server does not reset the socket (WinError 10054) mid-request.
+VLM_MAX_LONG_EDGE = 1280
 
 
 class VLMError(RuntimeError):
     """Raised when a page cannot be enriched after all retries."""
 
 
-# ---------------------------------------------------------------------------
-# Image encoding (base64 JPEG, quality 88)
-# ---------------------------------------------------------------------------
-def encode_page_jpeg_b64(img: np.ndarray) -> str:
-    """Encode an RGB ``uint8`` page image as a base64 JPEG string (q=88).
+class VisionProjectorDisabled(VLMError):
+    """llama-server rejected an image payload: no ``--mmproj`` projector loaded."""
 
-    Pillow is used (already a hard dependency via the OCR stack); OpenCV's
-    imencode would work identically.  The result is what goes into the
-    OpenAI-style ``image_url`` data URI.
+
+# llama.cpp's 400 body when a vision model is served without its projector.
+_VISION_DISABLED_RE = re.compile(r"mmproj|multimodal|vision", re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Image encoding (downscaled base64 JPEG for the VLM payload)
+# ---------------------------------------------------------------------------
+def encode_page_jpeg_b64(
+    img: np.ndarray,
+    max_long_edge: int = VLM_MAX_LONG_EDGE,
+    quality: int = JPEG_QUALITY,
+) -> str:
+    """Encode a page image as a base64 JPEG string for the VLM payload.
+
+    The long edge is downscaled to ``max_long_edge`` (1280px by default; the
+    OCR pass keeps its 2200px renders) before encoding, so a dense scanned
+    page cannot overflow the model's vision context and make llama-server
+    reset the connection (WinError 10054).  Pillow is used (already a hard
+    dependency via the OCR stack); the result goes into the OpenAI-style
+    ``image_url`` data URI.
     """
     from PIL import Image  # local import: keeps module load light for CLI use
 
     if img.ndim == 2:
         img = np.stack([img] * 3, axis=-1)
+    pil_img = Image.fromarray(img)
+    h, w = pil_img.height, pil_img.width
+    scale = max_long_edge / float(max(h, w))
+    if scale < 1.0:
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        resample = getattr(Image, "Resampling", Image).LANCZOS
+        pil_img = pil_img.resize((new_w, new_h), resample)
     buf = io.BytesIO()
-    Image.fromarray(img).save(buf, format="JPEG", quality=JPEG_QUALITY)
+    pil_img.save(buf, format="JPEG", quality=quality)
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
@@ -392,11 +420,16 @@ Rules:
 
 
 def _build_user_content(
-    img_b64: str,
+    img_b64: Optional[str],
     consensus_text: str,
     disputed_regions: list[dict],
 ) -> list[dict]:
-    """Assemble the OpenAI-style user message: image first, then OCR context."""
+    """Assemble the OpenAI-style user message: image first, then OCR context.
+
+    ``img_b64=None`` produces a text-only message (no ``image_url`` part) — the
+    fallback used when llama-server was started without a vision projector
+    (``--mmproj``) and rejects image payloads with 400 Bad Request.
+    """
     text_parts = [f"Consensus OCR text for this page:\n---\n{consensus_text or '(empty)'}\n---"]
     if disputed_regions:
         # Trim to the fields the model needs; keep boxes so it can locate them.
@@ -415,11 +448,14 @@ def _build_user_content(
         )
     text_parts.append("Return the single JSON object now.")
 
-    return [
-        {"type": "image_url",
-         "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-        {"type": "text", "text": "\n\n".join(text_parts)},
-    ]
+    content: list[dict] = []
+    if img_b64 is not None:
+        content.append(
+            {"type": "image_url",
+             "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+        )
+    content.append({"type": "text", "text": "\n\n".join(text_parts)})
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -521,19 +557,21 @@ def normalize_vlm_payload(raw: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Checkpoint cache (forge/.cache/{doc_hash}_page_{num}.json)
+# Checkpoint cache (forge/.cache/vlm/{doc_stem}_p{NNNN}.json)
 # ---------------------------------------------------------------------------
 class _CheckpointCache:
+    """Per-page VLM checkpoints: ``forge/.cache/vlm/{doc_stem}_p{NNNN}.json``."""
+
     def __init__(self, cache_dir: Path):
-        self.dir = Path(cache_dir)
+        self.dir = Path(cache_dir) / "vlm"
         self.dir.mkdir(parents=True, exist_ok=True)
 
-    def path_for(self, doc_hash: str, page_number: int) -> Path:
-        return self.dir / f"{doc_hash}_page_{page_number}.json"
+    def path_for(self, doc_key: str, page_number: int) -> Path:
+        return self.dir / f"{doc_key}_p{page_number:04d}.json"
 
-    def load(self, doc_hash: str, page_number: int,
+    def load(self, doc_key: str, page_number: int,
              expect_model: str) -> Optional[dict]:
-        p = self.path_for(doc_hash, page_number)
+        p = self.path_for(doc_key, page_number)
         if not p.exists():
             return None
         try:
@@ -548,9 +586,9 @@ class _CheckpointCache:
         except (json.JSONDecodeError, OSError):
             return None  # corrupt checkpoint: reprocess
 
-    def save(self, doc_hash: str, page_number: int,
+    def save(self, doc_key: str, page_number: int,
              model: str, payload: dict) -> None:
-        p = self.path_for(doc_hash, page_number)
+        p = self.path_for(doc_key, page_number)
         blob = {
             "cache_version": CACHE_VERSION,
             "model": model,
@@ -577,6 +615,23 @@ class VLMEnricher:
             payload = await vlm.enrich_page(doc_hash, 12, img, consensus)
     """
 
+    @staticmethod
+    def _normalize_llama_url(llama_url: str) -> str:
+        """Normalize any base URL to ``{root}/v1/chat/completions``.
+
+        Strips trailing slashes, guarantees the ``/v1`` segment appears exactly
+        once after the host root, and always posts to the OpenAI-compatible
+        chat endpoint — llama.cpp answers a bare ``/chat/completions`` (no
+        ``/v1``) with 400 Bad Request.
+        """
+        base = (llama_url or DEFAULT_LLM_URL).strip().rstrip("/")
+        if base.endswith("/chat/completions"):
+            base = base[: -len("/chat/completions")].rstrip("/")
+        if not base.endswith("/v1"):
+            root = "/".join(base.split("/", 3)[:3])  # scheme://host:port
+            base = root + "/v1"
+        return base + "/chat/completions"
+
     def __init__(
         self,
         llama_url: str = DEFAULT_LLM_URL,
@@ -589,9 +644,7 @@ class VLMEnricher:
         max_tokens: int = 4096,
         temperature: float = 0.1,
     ):
-        self.url = llama_url.rstrip("/")
-        if not self.url.endswith("/chat/completions"):
-            self.url += "/v1/chat/completions" if "/v1" in self.url else "/chat/completions"
+        self.url = self._normalize_llama_url(llama_url)
         self.model = model
         self.cache = _CheckpointCache(
             Path(cache_dir) if cache_dir else Path(__file__).resolve().parent / ".cache"
@@ -602,6 +655,7 @@ class VLMEnricher:
         self.timeout_s = timeout_s
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self._vision_disabled = False  # sticky text-only fallback flag
         self._client: Optional[httpx.AsyncClient] = None
 
     # -- lifecycle -----------------------------------------------------------
@@ -622,7 +676,7 @@ class VLMEnricher:
             self._client = None
 
     # -- single HTTP round-trip ----------------------------------------------
-    def _payload(self, img_b64: str, consensus_text: str,
+    def _payload(self, img_b64: Optional[str], consensus_text: str,
                  disputed_regions: list[dict]) -> dict:
         return {
             "model": self.model,
@@ -636,8 +690,10 @@ class VLMEnricher:
             "max_tokens": self.max_tokens,
             "stream": False,
             # Locked contract: structured JSON out, minimal reasoning for speed.
+            # llama.cpp does not understand OpenAI's "reasoning_effort" (it 400s
+            # on unknown params); the chat-template kwarg is the supported knob.
             "response_format": {"type": "json_object"},
-            "reasoning_effort": "low",
+            "chat_template_kwargs": {"enable_thinking": False},
         }
 
     @staticmethod
@@ -648,7 +704,7 @@ class VLMEnricher:
             content = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", content)
         return json.loads(content)
 
-    async def _request_with_retries(self, img_b64: str, consensus_text: str,
+    async def _request_with_retries(self, img_b64: Optional[str], consensus_text: str,
                                     disputed_regions: list[dict]) -> dict:
         assert self._client is not None, "call open() first (or use 'async with')"
         payload = self._payload(img_b64, consensus_text, disputed_regions)
@@ -662,10 +718,29 @@ class VLMEnricher:
                         f"HTTP {resp.status_code}", request=resp.request,
                         response=resp,
                     )
-                resp.raise_for_status()
+                # Log the exact status + body before touching resp.json() so a
+                # bad payload or a missing --mmproj is diagnosable from logs.
+                if resp.status_code >= 400 or not (resp.text or ""):
+                    print(
+                        f"[vlm] HTTP {resp.status_code} from {self.url} "
+                        f"(attempt {attempt + 1}/{self.max_retries}): "
+                        f"{(resp.text or '')[:500]!r}",
+                        file=sys.stderr, flush=True,
+                    )
+                if img_b64 is not None and resp.status_code == 400 and \
+                        _VISION_DISABLED_RE.search(resp.text or ""):
+                    raise VisionProjectorDisabled(self.url)
+                if resp.status_code >= 400 and resp.status_code < 500:
+                    # Other client errors (bad params etc.) are not retryable.
+                    raise VLMError(
+                        f"VLM endpoint {self.url} returned HTTP "
+                        f"{resp.status_code}: {(resp.text or '')[:500]!r}"
+                    ) from None
                 body = resp.json()
                 content = body["choices"][0]["message"]["content"]
                 return self._parse_json(content)
+            except VisionProjectorDisabled:
+                raise  # caller switches to text-only; never retry the image
             except (httpx.TransportError, httpx.HTTPStatusError,
                     json.JSONDecodeError, KeyError, IndexError, TypeError) as e:
                 last_err = e
@@ -682,29 +757,42 @@ class VLMEnricher:
     # -- public API ------------------------------------------------------------
     async def enrich_page(
         self,
-        doc_hash: str,
+        doc_key: str,
         page_number: int,
         img: np.ndarray,
         consensus: dict,
     ) -> dict:
         """Enrich one page. Cache-first, retry-protected, schema-normalized.
 
-        ``doc_hash`` is the (truncated) sha256 of the PDF file; together with
-        ``page_number`` it forms the checkpoint key so interrupted runs resume
-        without re-querying the model for completed pages.
+        ``doc_key`` (the PDF file stem) together with ``page_number`` forms the
+        checkpoint key so interrupted runs resume without re-querying the model
+        for completed pages.  If llama-server answers 400 because no vision
+        projector (``--mmproj``) is loaded, the page is structured from the
+        consensus OCR text alone and the fallback stays on for the run.
         """
-        cached = self.cache.load(doc_hash, page_number, self.model)
+        cached = self.cache.load(doc_key, page_number, self.model)
         if cached is not None:
             return cached
 
-        img_b64 = encode_page_jpeg_b64(img)
-        raw = await self._request_with_retries(
-            img_b64,
-            str(consensus.get("text") or ""),
-            list(consensus.get("disputed_regions") or []),
-        )
+        consensus_text = str(consensus.get("text") or "")
+        disputed_regions = list(consensus.get("disputed_regions") or [])
+        img_b64 = None if self._vision_disabled else encode_page_jpeg_b64(img)
+        try:
+            raw = await self._request_with_retries(
+                img_b64, consensus_text, disputed_regions)
+        except VisionProjectorDisabled:
+            if not self._vision_disabled:
+                self._vision_disabled = True
+                print(
+                    "[vlm] llama-server returned 400 for an image payload — "
+                    "no --mmproj vision projector loaded. Falling back to "
+                    "text-only OCR structuring for the rest of this run.",
+                    file=sys.stderr, flush=True,
+                )
+            raw = await self._request_with_retries(
+                None, consensus_text, disputed_regions)
         payload = normalize_vlm_payload(raw)
-        self.cache.save(doc_hash, page_number, self.model, payload)
+        self.cache.save(doc_key, page_number, self.model, payload)
         return payload
 
     async def enrich_pages(

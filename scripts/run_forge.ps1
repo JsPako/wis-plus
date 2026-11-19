@@ -106,7 +106,7 @@ if ($mmHit) {
 $llamaArgs = @(
     "-m", "`"$model`"",
     "-ngl", "99",
-    "-c", "8192",
+    "--ctx-size", "16384",
     "--host", "127.0.0.1",
     "--port", "$llamaPort"
 )
@@ -137,7 +137,7 @@ try {
     & "$root\.venv\Scripts\python.exe" -m forge.build_db `
         --pdf-dir "./pdfs" `
         --db-path "./$dbPath" `
-        --llama-url "http://127.0.0.1:$llamaPort"
+        --llama-url "http://127.0.0.1:$llamaPort/v1"
     if ($LASTEXITCODE -ne 0) {
         throw "forge.build_db failed with exit code $LASTEXITCODE."
     }

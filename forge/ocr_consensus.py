@@ -21,14 +21,17 @@ tokens ``{text, x0, y0, x1, y1, confidence}``.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
+import re
 import threading
 import time
 import warnings
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
 from typing import Optional, Sequence
 
 import numpy as np
@@ -299,6 +302,17 @@ def _worker_easyocr(img: np.ndarray) -> list[dict]:
 _ENGINE_FUNCS = (_worker_rapidocr, _worker_tesseract, _worker_easyocr)
 _ENGINE_NAMES = ("rapidocr", "tesseract", "easyocr")
 
+# Stage 1 (fast dual-OCR pass) uses only the two cheap engines; EasyOCR is
+# reserved for the on-demand tie-break pass over disputed pages.
+FAST_ENGINE_FUNCS = (_worker_rapidocr, _worker_tesseract)
+FAST_ENGINE_NAMES = ("rapidocr", "tesseract")
+
+# Stage 2 disagreement thresholds: a page is sent to the EasyOCR tie-breaker
+# only when RapidOCR and Tesseract genuinely disagree (detect_disputed_page).
+DISPUTE_IOU_THRESHOLD = 0.45      # spatial overlap needed to pair two tokens
+DISPUTE_CONF_THRESHOLD = 0.78     # per-engine mean confidence floor
+DISPUTE_MIN_WORDS = 15            # sparse-reading floor on a non-blank page
+
 #: Public alias + console display names used by the progress tracker.
 ENGINE_NAMES: tuple[str, ...] = _ENGINE_NAMES
 _ENGINE_DISPLAY = {"rapidocr": "RapidOCR", "tesseract": "Tesseract", "easyocr": "EasyOCR"}
@@ -346,10 +360,12 @@ class OCRProgressTracker:
         total_pages: int,
         label: str = "",
         engine_names: Sequence[str] = _ENGINE_NAMES,
+        stage: str = "OCR",
     ) -> None:
         self._lock = threading.Lock()
         self.total_pages = max(1, int(total_pages))
         self.label = label
+        self.stage = stage
         self.engine_names = tuple(engine_names)
         self._done = {n: 0 for n in self.engine_names}
         self._failed = {n: 0 for n in self.engine_names}
@@ -427,7 +443,7 @@ class OCRProgressTracker:
             disp = _ENGINE_DISPLAY.get(n, n)
             extra = f", {self._elapsed[n]:.0f}s"
             parts.append(f"{disp}: {d}/{self.total_pages} ({pct:.0f}%{extra})")
-        label = f"[OCR {self.label}] " if self.label else "[OCR] "
+        label = f"[{self.stage} {self.label}] " if self.label else f"[{self.stage}] "
         return label + " | ".join(parts)
 
     def finish(self) -> None:
@@ -453,7 +469,7 @@ class OCRProgressTracker:
                 mark = f", {self._failed[n]} failed" if self._failed[n] else ""
                 parts.append(f"{_ENGINE_DISPLAY.get(n, n)}: {d}/{self.total_pages}, "
                              f"{e:.1f}s total (avg {avg:.2f}s/page{mark})")
-            label = f"[OCR {self.label}] " if self.label else "[OCR] "
+            label = f"[{self.stage} {self.label}] " if self.label else f"[{self.stage}] "
             summary = f"{label}done in {wall:.1f}s | " + " | ".join(parts)
             self._finished = True
         if self._rich is not None:
@@ -638,6 +654,217 @@ def run_ocr_engines(
 # ---------------------------------------------------------------------------
 # Consensus: spatial alignment + majority voting
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Stage 2: disagreement detection (RapidOCR vs Tesseract)
+# ---------------------------------------------------------------------------
+def _has_digit(text: str) -> bool:
+    return any(ch.isdigit() for ch in text)
+
+
+def detect_disputed_page(
+    rapid_tokens: list[dict],
+    tesseract_tokens: list[dict],
+    is_blank: bool = False,
+    iou_threshold: float = DISPUTE_IOU_THRESHOLD,
+    conf_threshold: float = DISPUTE_CONF_THRESHOLD,
+    min_words: int = DISPUTE_MIN_WORDS,
+) -> Optional[str]:
+    """Decide whether a page needs the EasyOCR tie-breaker (Stage 2).
+
+    Returns ``None`` when RapidOCR and Tesseract agree well enough, otherwise
+    a short human-readable reason.  A page is *disputed* only when:
+
+      * the two engines disagree on tokens at the same location (IoU >=
+        ``iou_threshold``) - especially numeric values such as torque specs
+        (``Nm``, ``ft-lb``) or Mercedes part codes; or
+      * either engine's mean token confidence is below ``conf_threshold``; or
+      * fewer than ``min_words`` words were detected on a non-blank page.
+
+    Blank pages and pages where both engines found nothing are never disputed.
+    """
+    rapid_tokens = [t for t in (rapid_tokens or []) if t.get("text")]
+    tesseract_tokens = [t for t in (tesseract_tokens or []) if t.get("text")]
+    word_count = max(len(rapid_tokens), len(tesseract_tokens))
+
+    if is_blank or word_count == 0:
+        return None
+
+    # Spatially pair the two engines' tokens and look for text mismatches.
+    pool: list[dict] = []
+    for eng, toks in ((0, rapid_tokens), (1, tesseract_tokens)):
+        for t in toks:
+            pool.append({
+                "text": t["text"],
+                "box": [float(t["x0"]), float(t["y0"]),
+                        float(t["x1"]), float(t["y1"])],
+                "engine": eng,
+            })
+    any_mismatch = False
+    numeric_mismatch = False
+    for cluster in _cluster_by_iou(pool, iou_threshold):
+        if len({t["engine"] for t in cluster}) < 2:
+            continue  # only one engine saw this spot -> no disagreement possible
+        if len({_norm_text(t["text"]) for t in cluster}) > 1:
+            any_mismatch = True
+            if any(_has_digit(t["text"]) for t in cluster):
+                numeric_mismatch = True
+    if numeric_mismatch:
+        return "numeric-token mismatch (torque/part-code risk)"
+    if any_mismatch:
+        return "token text mismatch"
+
+    # Low mean confidence from either fast engine.
+    for name, toks in (("rapidocr", rapid_tokens), ("tesseract", tesseract_tokens)):
+        confs = [float(t.get("confidence") or 0.0) for t in toks]
+        if confs and sum(confs) / len(confs) < conf_threshold:
+            return f"{name} mean confidence below {conf_threshold:.2f}"
+
+    # Sparse reading on a page that is not blank.
+    if word_count < min_words:
+        return f"only {word_count} words detected (< {min_words})"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Stage 1: fast dual-OCR pass (RapidOCR + Tesseract only)
+# ---------------------------------------------------------------------------
+def run_fast_ocr_engines(
+    img: np.ndarray,
+    max_workers: Optional[int] = None,
+) -> tuple[list[dict], list[dict]]:
+    """Run the two fast engines (RapidOCR, Tesseract) in parallel on one page.
+
+    EasyOCR is deliberately NOT part of Stage 1 - it only runs later as an
+    on-demand tie-breaker over disputed pages.  Returns
+    ``(rapidocr_tokens, tesseract_tokens)``; a failed engine degrades to ``[]``.
+    """
+    workers = max_workers or min(len(FAST_ENGINE_FUNCS), os.cpu_count() or 1)
+    results: list[list[dict]] = [None] * len(FAST_ENGINE_FUNCS)
+    with ProcessPoolExecutor(max_workers=workers, mp_context="spawn") as ex:
+        futs = {ex.submit(fn, img): i for i, fn in enumerate(FAST_ENGINE_FUNCS)}
+        for fut in as_completed(futs):
+            i = futs[fut]
+            try:
+                results[i] = fut.result()
+            except Exception:  # engine crash on a degenerate page is not fatal
+                results[i] = []
+    return results[0], results[1]
+
+
+def run_easyocr_engine(img: np.ndarray) -> list[dict]:
+    """Run ONLY EasyOCR on one page (Stage-3 tie-breaker, unpinned fallback).
+
+    Used when the pinned per-engine worker pools are unavailable; a failed or
+    missing EasyOCR degrades to ``[]`` so the consensus of the two fast
+    engines still stands.
+    """
+    with ProcessPoolExecutor(max_workers=1, mp_context="spawn") as ex:
+        try:
+            return ex.submit(_worker_easyocr, img).result()
+        except Exception:  # tie-breaker is best-effort by design
+            return []
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: EasyOCR tie-breaker progress (independent of Stage 1)
+# ---------------------------------------------------------------------------
+class TieBreakProgressTracker:
+    """Stage-3 progress display for the EasyOCR tie-break pass.
+
+    Completely independent from :class:`OCRProgressTracker` (Stage 1): it only
+    counts *disputed* pages and is safe to construct with ``total_pages == 0``
+    - nothing is spawned, no division by zero, and :meth:`finish` prints the
+    skip line::
+
+        [OCR-TieBreak 01002.pdf] Skipped (0 disputed pages — 100% RapidOCR/Tesseract consensus)
+    """
+
+    def __init__(self, total_pages: int, agreed_pages: int = 0, label: str = "") -> None:
+        self.total_pages = max(0, int(total_pages))
+        self.agreed_pages = max(0, int(agreed_pages))
+        self.label = label
+        self._lock = threading.Lock()
+        self._done = 0
+        self._last_line_len = 0
+        self._finished = False
+
+    def _prefix(self) -> str:
+        return f"[OCR-TieBreak {self.label}] " if self.label else "[OCR-TieBreak] "
+
+    def _line(self) -> str:
+        return (f"{self._prefix()}EasyOCR: {self._done}/{self.total_pages} "
+                f"disputed pages ({self.agreed_pages} agreed)")
+
+    def record(self, elapsed_s: float = 0.0) -> None:
+        """Register one completed disputed-page EasyOCR run (zero-safe)."""
+        if self.total_pages == 0 or self._finished:
+            return
+        with self._lock:
+            self._done += 1
+            line = self._line()
+        if sys.stdout.isatty():
+            self._last_line_len = _write_status_line(line, self._last_line_len)
+        else:
+            print(line, flush=True)
+
+    def finish(self) -> None:
+        """Stop the display and print the final line (idempotent)."""
+        with self._lock:
+            if self._finished:
+                return
+            self._finished = True
+            if self.total_pages == 0:
+                out = (f"{self._prefix()}Skipped (0 disputed pages — "
+                       f"100% RapidOCR/Tesseract consensus)")
+            else:
+                out = self._line()
+        print(out, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Per-page OCR consensus cache (forge/.cache/ocr/{doc_stem}_p{NNNN}.json)
+# ---------------------------------------------------------------------------
+class OcrConsensusCache:
+    """Disk cache for per-page consensus results so interrupted runs resume."""
+
+    CACHE_VERSION = 1
+
+    def __init__(self, base_dir) -> None:
+        self.dir = Path(base_dir) / "ocr"
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def path_for(self, doc_stem: str, page_number: int) -> Path:
+        return self.dir / f"{doc_stem}_p{page_number:04d}.json"
+
+    def load(self, doc_stem: str, page_number: int) -> Optional[dict]:
+        p = self.path_for(doc_stem, page_number)
+        if not p.exists():
+            return None
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                blob = json.load(f)
+            if blob.get("cache_version") != self.CACHE_VERSION:
+                return None
+            payload = blob.get("payload")
+            return payload if isinstance(payload, dict) else None
+        except (json.JSONDecodeError, OSError):
+            return None  # corrupt checkpoint: recompute
+
+    def save(self, doc_stem: str, page_number: int, payload: dict) -> None:
+        p = self.path_for(doc_stem, page_number)
+        blob = {
+            "cache_version": self.CACHE_VERSION,
+            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "payload": payload,
+        }
+        tmp = p.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(blob, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)  # atomic on Windows (NTFS) and POSIX
+
+
 def compute_consensus(
     engine_results: list[list[dict]],
     iou_threshold: float = 0.45,
