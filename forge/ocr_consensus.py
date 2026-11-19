@@ -129,10 +129,32 @@ def _worker_rapidocr(img: np.ndarray) -> list[dict]:
         return []
 
 
+_TESSERACT_CANDIDATES = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+)
+
+
+def _resolve_tesseract_cmd() -> str:
+    """Locate tesseract.exe: PATH first, then the standard install dirs."""
+    import shutil  # type: ignore
+
+    found = shutil.which("tesseract")
+    if found:
+        return found
+    for cand in _TESSERACT_CANDIDATES:
+        if os.path.isfile(cand):
+            return cand
+    raise FileNotFoundError("tesseract binary not found on PATH or in standard locations")
+
+
 def _worker_tesseract(img: np.ndarray) -> list[dict]:
     try:
+        import shutil  # type: ignore
         import cv2  # type: ignore
         import pytesseract  # type: ignore
+        if shutil.which(pytesseract.pytesseract.tesseract_cmd) is None:
+            pytesseract.pytesseract.tesseract_cmd = _resolve_tesseract_cmd()
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) if img.ndim == 3 else img
         data = pytesseract.image_to_data(
             gray, output_type=pytesseract.Output.DICT, config="--psm 6"
