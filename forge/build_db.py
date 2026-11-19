@@ -475,6 +475,7 @@ async def process_pdf(
             ]
             search_text = _build_search_text(payload, synonyms)
             rec = ProcedureRecord(
+                page_id=page_id,
                 category=payload.get("category"),
                 subcategory=payload.get("subcategory"),
                 title=payload.get("title"),
