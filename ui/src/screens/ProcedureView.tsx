@@ -33,6 +33,7 @@ import type {
   ToolItem,
   TorqueSpec,
 } from '@/types/api';
+import { useToolbox } from '@/state/ToolboxContext';
 import { colors, radius, spacing, typography } from '@/theme/tokens';
 
 /** Left/right split ratio per the UX spec. */
@@ -177,6 +178,9 @@ export default function ProcedureView({ id }: { id: number }) {
   const [tipsMode, setTipsMode] = useState<TipsMode>('inline');
   const [checked, setChecked] = useState<Record<string, boolean>>({});
 
+  // Toolbox grab list (Task 9) — pin this procedure's tools into the merged list.
+  const { isPinned, togglePinJob } = useToolbox();
+
   const nonceRef = useRef(0);
   const [focusRequest, setFocusRequest] = useState<PdfFocusRequest | null>(null);
 
@@ -294,7 +298,18 @@ export default function ProcedureView({ id }: { id: number }) {
               {/* Tools & spanners ------------------------------------------ */}
               {mode !== 'torque' && detail.tools_required.length > 0 ? (
                 <View style={styles.card}>
-                  <Text style={styles.sectionLabel}>Required Tools & Spanners</Text>
+                  <View style={styles.toolsHeaderRow}>
+                    <Text style={styles.sectionLabel}>Required Tools & Spanners</Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => togglePinJob({ id: detail.id, title: detail.title, tools: detail.tools_required })}
+                      style={({ pressed }) => [styles.pinBtn, isPinned(detail.id) && styles.pinBtnActive, pressed && { opacity: 0.85 }]}
+                    >
+                      <Text style={[styles.pinBtnText, isPinned(detail.id) && { color: colors.textOnAmber }]}>
+                        {isPinned(detail.id) ? '✓ Pinned to Toolbox' : '+ Pin Tools to Toolbox'}
+                      </Text>
+                    </Pressable>
+                  </View>
                   <View style={styles.chipWrap}>
                     {detail.tools_required.map((tool) => (
                       <ToolChip key={`${tool.name}-${tool.size_or_code ?? ''}`} tool={tool} />
@@ -453,6 +468,23 @@ const styles = {
   sectionLabel: { ...typography.sectionLabel, color: colors.textSecondary, marginBottom: spacing.md },
 
   // Tools ------------------------------------------------------------------------
+  toolsHeaderRow: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'space-between' as const,
+    gap: spacing.md,
+    marginBottom: -2,
+  },
+  pinBtn: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: colors.bgElevated,
+    borderWidth: 1,
+    borderColor: colors.hairlineStrong,
+  },
+  pinBtnActive: { backgroundColor: colors.accentAmber, borderColor: colors.accentAmber },
+  pinBtnText: { fontSize: 13, fontWeight: '700' as const, color: colors.textPrimary },
   chipWrap: { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: spacing.sm },
   toolChip: {
     flexDirection: 'row' as const,

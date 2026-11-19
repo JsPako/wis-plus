@@ -23,6 +23,8 @@ import CategorySidebar, { type OpenedProcedureRef } from '@/components/CategoryS
 import ProfileModal from '@/components/ProfileModal';
 import QuickSearch from '@/components/QuickSearch';
 import SplashScreen from '@/components/SplashScreen';
+import ToolboxDrawer from '@/components/ToolboxDrawer';
+import { ToolboxProvider, useToolbox } from '@/state/ToolboxContext';
 import ProcedureView from '@/screens/ProcedureView';
 import SettingsView from '@/screens/SettingsView';
 import { ThemeProvider } from '@/theme/ThemeContext';
@@ -193,6 +195,10 @@ function AppShell() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('ALL');
 
+  // Toolbox grab list (Task 9).
+  const { pinnedJobs } = useToolbox();
+  const [toolboxOpen, setToolboxOpen] = useState(false);
+
   // Recently opened procedures (persisted per machine).
   const [recent, setRecent] = useState<RecentItem[]>(loadRecent);
   useEffect(() => { persistRecent(recent); }, [recent]);
@@ -312,6 +318,11 @@ function AppShell() {
           <Text numberOfLines={1} style={[styles.pillText, !profile?.configured && { color: colors.accentAmber }]}>{profileLabel}</Text>
         </Pressable>
 
+        {/* Toolbox grab list — combined spanner & special-tool checklist */}
+        <Pressable accessibilityRole="button" onPress={() => setToolboxOpen(true)} style={({ pressed }) => [styles.toolboxBtn, pinnedJobs.length > 0 && styles.toolboxBtnActive, pressed && { opacity: 0.75 }]}>
+          <Text style={[styles.toolboxText, pinnedJobs.length > 0 && { color: colors.accentAmber }]}>🧰 Toolbox ({pinnedJobs.length})</Text>
+        </Pressable>
+
         {/* Settings */}
         <Pressable accessibilityRole="button" onPress={() => setView('settings')} style={({ pressed }) => [styles.gearBtn, view === 'settings' && styles.gearBtnActive, pressed && { opacity: 0.75 }]}>
           <Text style={[styles.gearText, view === 'settings' && { color: colors.textOnAmber }]}>⚙️ Settings</Text>
@@ -361,6 +372,8 @@ function AppShell() {
         onClose={() => setProfileModalOpen(false)}
         onSaved={handleProfileSaved}
       />
+
+      <ToolboxDrawer open={toolboxOpen} onClose={() => setToolboxOpen(false)} />
     </View>
   );
 }
@@ -368,7 +381,9 @@ function AppShell() {
 export default function App() {
   return (
     <ThemeProvider>
-      <AppShell />
+      <ToolboxProvider>
+        <AppShell />
+      </ToolboxProvider>
     </ThemeProvider>
   );
 }
@@ -426,6 +441,14 @@ const styles = StyleSheet.create({
   },
   pillUnset: { borderColor: colors.accentAmber },
   pillText: { ...typography.caption, color: colors.textPrimary },
+
+  toolboxBtn: {
+    height: 34, paddingHorizontal: spacing.md, borderRadius: radius.pill,
+    borderWidth: 1, borderColor: colors.borderHairline, backgroundColor: colors.bgElevated,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  toolboxBtnActive: { borderColor: colors.accentAmber },
+  toolboxText: { ...typography.caption, fontWeight: '700' as const, color: colors.textSecondary },
 
   gearBtn: {
     height: 34, paddingHorizontal: spacing.md, borderRadius: radius.md,
