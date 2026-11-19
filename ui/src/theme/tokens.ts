@@ -28,6 +28,8 @@ export const colors = {
   hairlineStrong: 'rgba(240, 243, 246, 0.16)',
   scrim: 'rgba(9, 10, 12, 0.62)',
   amberDim: 'rgba(229, 169, 60, 0.14)',
+  /** Shadow fill for elevated cards (Spotlight panel, modals). */
+  shadow: 'rgba(0, 0, 0, 0.5)',
 } as const;
 
 export type ColorToken = keyof typeof colors;
