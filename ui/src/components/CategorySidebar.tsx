@@ -19,10 +19,9 @@
  * Clicking a procedure leaf calls `onOpenProcedure`, which the shell wires to
  * Focused Mode (sidebar collapses, "← Back to Directory" appears).
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
-import {
-  Animated,
+import Animated, {
   Easing,
   useAnimatedStyle,
   useSharedValue,
@@ -36,7 +35,7 @@ import type {
 } from '@/types/api';
 import { colors, motion, radius, spacing, typography } from '@/theme/tokens';
 
-const AnimView = Animated.createAnimatedComponent(View);
+const AnimView = Animated.View;
 
 /** Full width of the expanded sidebar. */
 export const SIDEBAR_WIDTH = 320;
@@ -82,11 +81,10 @@ function Chevron({ open }: { open: boolean }) {
   const rotation = useSharedValue(0);
 
   useEffect(() => {
-    withTiming(rotation, {
-      toValue: open ? 90 : 0,
-      duration: motion.pressMs * 1.5,
-      easing: Easing.out(Easing.cubic),
-    });
+    rotation.value = withTiming(
+      open ? 90 : 0,
+      { duration: motion.pressMs * 1.5, easing: Easing.out(Easing.cubic) },
+    );
   }, [open, rotation]);
 
   const style = useAnimatedStyle(() => ({ transform: [{ rotate: `${rotation.value}deg` }] }));
@@ -128,8 +126,8 @@ function NodeChildren({ open, children }: { open: boolean; children: React.React
 
   useEffect(() => {
     if (open) {
-      withTiming(opacity, { toValue: 1, duration: motion.pressMs });
-      withTiming(translateY, { toValue: 0, duration: motion.pressMs, easing: Easing.out(Easing.cubic) });
+      opacity.value = withTiming(1, { duration: motion.pressMs });
+      translateY.value = withTiming(0, { duration: motion.pressMs, easing: Easing.out(Easing.cubic) });
     } else {
       opacity.value = 0;
       translateY.value = -6;
@@ -262,11 +260,10 @@ export default function CategorySidebar({
   const width = useSharedValue(collapsed ? 0 : SIDEBAR_WIDTH);
 
   useEffect(() => {
-    withTiming(width, {
-      toValue: collapsed ? 0 : SIDEBAR_WIDTH,
-      duration: motion.modalInMs,
-      easing: Easing.out(Easing.cubic),
-    });
+    width.value = withTiming(
+      collapsed ? 0 : SIDEBAR_WIDTH,
+      { duration: motion.modalInMs, easing: Easing.out(Easing.cubic) },
+    );
   }, [collapsed, width]);
 
   const panelStyle = useAnimatedStyle(() => ({ width: width.value }));

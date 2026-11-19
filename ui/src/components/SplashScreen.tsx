@@ -11,24 +11,23 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import {
-  Animated,
+import { View } from 'react-native';
+import Animated, {
   Easing,
-  Text,
-  View,
-  interpolate,
-  spring,
+  interpolateColor,
+  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withSequence,
+  withSpring,
   withTiming,
 } from 'react-native-reanimated';
 
 import { api } from '@/api/client';
-import { colors, motion, radius, spacing } from '@/theme/tokens';
+import { colors, motion, spacing } from '@/theme/tokens';
 
-const AnimView = Animated.createAnimatedComponent(View);
-const AnimText = Animated.createAnimatedComponent(Text);
+const AnimView = Animated.View;
+const AnimText = Animated.Text;
 
 interface SplashScreenProps {
   /** Called exactly once when the splash has fully faded out. */
@@ -77,20 +76,20 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
   const exitOpacity = useSharedValue(1);  // whole-splash fade-out
 
   useEffect(() => {
-    withTiming(
-      wisOpacity,
-      { toValue: 1, duration: motion.splash.wisFadeInMs, easing: Easing.out(Easing.cubic) },
+    wisOpacity.value = withTiming(
+      1,
+      { duration: motion.splash.wisFadeInMs, easing: Easing.out(Easing.cubic) },
       (finished) => {
         if (!finished) return;
         // Immediately after the wordmark lands, the `+` slams in from the right.
-        spring(
-          plusX,
-          { toValue: 0, ...motion.splash.plusSpring },
-          (state) => {
-            if (!state.finished) return;
-            withSequence(
-              withTiming(glow, { toValue: 1, duration: motion.splash.glowPulseMs.up }),
-              withTiming(glow, { toValue: 0, duration: motion.splash.glowPulseMs.down }),
+        plusX.value = withSpring(
+          0,
+          { damping: 14, stiffness: 280 },
+          (finished) => {
+            if (!finished) return;
+            glow.value = withSequence(
+              withTiming(1, { duration: motion.splash.glowPulseMs.up }),
+              withTiming(0, { duration: motion.splash.glowPulseMs.down }),
             );
           },
         );
@@ -104,13 +103,13 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
     const elapsed = Date.now() - mountedAtRef.current;
     const wait = Math.max(0, motion.splash.minVisibleMs - elapsed);
     const t = window.setTimeout(() => {
-      withTiming(
-        exitOpacity,
-        { toValue: 0, duration: motion.splash.exitFadeMs, easing: Easing.in(Easing.quad) },
+      exitOpacity.value = withTiming(
+        0,
+        { duration: motion.splash.exitFadeMs, easing: Easing.in(Easing.quad) },
         (finished) => {
           if (finished && !completedRef.current) {
             completedRef.current = true;
-            onCompleteRef.current();
+            runOnJS(onCompleteRef.current)();
           }
         },
       );
@@ -125,11 +124,7 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
     transform: [{ translateX: plusX.value }],
     textShadowRadius: 6 + glow.value * 28,
     textShadowOffset: { width: 0, height: 0 },
-    textShadowColor: interpolate(
-      glow.value,
-      [0, 1],
-      ['rgba(229, 169, 60, 0.35)', 'rgba(229, 169, 60, 0.95)'],
-    ),
+    textShadowColor: interpolateColor(glow.value, [0, 1], ['rgba(229, 169, 60, 0.35)', 'rgba(229, 169, 60, 0.95)']),
   }));
 
   const exitStyle = useAnimatedStyle(() => ({ opacity: exitOpacity.value }));
@@ -162,9 +157,7 @@ const styles = {
     fontWeight: '800' as const,
     letterSpacing: 6,
     color: colors.textPrimary, // bold metallic white
-    textShadowColor: 'rgba(240, 243, 246, 0.25)',
-    textShadowRadius: 18,
-    textShadowOffset: { width: 0, height: 0 },
+    textShadow: '0px 2px 12px rgba(240, 243, 246, 0.25)',
   },
   plus: {
     fontSize: 124,

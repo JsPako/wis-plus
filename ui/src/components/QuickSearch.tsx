@@ -24,10 +24,9 @@
  *   • Enter / row click      → open the procedure in Focused Mode, close modal
  *   • Escape / backdrop click → close the modal
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
-import {
-  Animated,
+import Animated, {
   Easing,
   useAnimatedStyle,
   useSharedValue,
@@ -38,7 +37,7 @@ import { api, ApiError } from '@/api/client';
 import type { ManualSource, SearchResultItem } from '@/types/api';
 import { colors, motion, radius, spacing, typography } from '@/theme/tokens';
 
-const AnimView = Animated.createAnimatedComponent(View);
+const AnimView = Animated.View;
 
 /** Debounce window for the live search requests. */
 const DEBOUNCE_MS = 120;
@@ -173,16 +172,16 @@ export default function QuickSearch({ visible, onClose, onOpenProcedure, engine,
       setLoading(false);
       setSelected(0);
       requestId.current += 1;               // invalidate any in-flight request
-      withTiming(scrimOpacity, { toValue: 1, duration: motion.modalInMs });
-      withTiming(panelScale, { toValue: 1, duration: motion.modalInMs, easing: Easing.out(Easing.cubic) });
-      withTiming(panelY, { toValue: 0, duration: motion.modalInMs, easing: Easing.out(Easing.cubic) });
+      scrimOpacity.value = withTiming(1, { duration: motion.modalInMs });
+      panelScale.value = withTiming(1, { duration: motion.modalInMs, easing: Easing.out(Easing.cubic) });
+      panelY.value = withTiming(0, { duration: motion.modalInMs, easing: Easing.out(Easing.cubic) });
       // Focus after the panel has mounted so the webview doesn't scroll-jump.
       const t = setTimeout(() => inputRef.current?.focus(), 40);
       return () => clearTimeout(t);
     }
-    withTiming(scrimOpacity, { toValue: 0, duration: motion.modalInMs });
-    withTiming(panelScale, { toValue: 0.96, duration: motion.modalInMs });
-    withTiming(panelY, { toValue: -12, duration: motion.modalInMs });
+    scrimOpacity.value = withTiming(0, { duration: motion.modalInMs });
+    panelScale.value = withTiming(0.96, { duration: motion.modalInMs });
+    panelY.value = withTiming(-12, { duration: motion.modalInMs });
   }, [visible, scrimOpacity, panelScale, panelY]);
 
   const scrimStyle = useAnimatedStyle(() => ({ opacity: scrimOpacity.value }));
@@ -416,7 +415,7 @@ const styles = {
   panel: {
     width: '90%' as const,
     maxWidth: 680,
-    maxHeight: '82%',
+    maxHeight: '82%' as const,
     backgroundColor: colors.bgSurface,
     borderColor: colors.accentAmber, // the Spotlight focus border
     borderWidth: 1.5,

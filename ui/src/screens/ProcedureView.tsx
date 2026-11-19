@@ -21,7 +21,7 @@
  * The "← Back to Directory" header control lives in the App shell; this
  * component owns everything below it once a procedure is focused.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
 
 import PdfVerifyPane, { type PdfFocusRequest } from '@/components/PdfVerifyPane';

@@ -18,7 +18,7 @@
  *
  * All colors come from `@/theme/tokens` — no raw hex in this file.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -28,8 +28,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import {
-  Animated,
+import Animated, {
   Easing,
   useAnimatedStyle,
   useSharedValue,
@@ -42,7 +41,7 @@ import { api } from '@/api/client';
 import type { NormalizedBBox } from '@/types/api';
 import { colors, radius, spacing, typography } from '@/theme/tokens';
 
-const AnimView = Animated.createAnimatedComponent(View);
+const AnimView = Animated.View;
 
 /** A verification request fired by the left pane (ProcedureView). */
 export interface PdfFocusRequest {
@@ -90,8 +89,8 @@ function PulseHighlight({ left, top, width, height }: {
   useEffect(() => {
     pulse.value = withRepeat(
       withSequence(
-        withTiming(pulse, { toValue: 0.3, duration: 650, easing: Easing.inOut(Easing.quad) }),
-        withTiming(pulse, { toValue: 1, duration: 650, easing: Easing.inOut(Easing.quad) }),
+        withTiming(0.3, { duration: 650, easing: Easing.inOut(Easing.quad) }),
+        withTiming(1, { duration: 650, easing: Easing.inOut(Easing.quad) }),
       ),
       -1,
       false,
@@ -382,7 +381,7 @@ const styles = {
   // Toolbar ------------------------------------------------------------------
   toolbar: {
     flexDirection: 'row' as const,
-    alignItems: 'center',
+    alignItems: 'center' as const,
     gap: spacing.sm,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,

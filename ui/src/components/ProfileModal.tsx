@@ -7,14 +7,10 @@
  * then persists via POST /api/profile.
  */
 
-import React, { useEffect, useState } from 'react';
-import {
-  Animated,
+import { useEffect, useState } from 'react';
+import { Pressable, ScrollView, Text, View } from 'react-native';
+import Animated, {
   Easing,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
   useAnimatedStyle,
   useSharedValue,
   withTiming,
@@ -29,7 +25,7 @@ import {
 } from '@/types/api';
 import { colors, motion, radius, spacing, typography } from '@/theme/tokens';
 
-const AnimView = Animated.createAnimatedComponent(View);
+const AnimView = Animated.View;
 
 interface ProfileModalProps {
   visible: boolean;
@@ -95,11 +91,11 @@ export default function ProfileModal({ visible, initialProfile, onClose, onSaved
   const panelScale = useSharedValue(visible ? 1 : 0.96);
   useEffect(() => {
     if (visible) {
-      withTiming(scrimOpacity, { toValue: 1, duration: motion.modalInMs });
-      withTiming(panelScale, { toValue: 1, duration: motion.modalInMs, easing: Easing.out(Easing.cubic) });
+      scrimOpacity.value = withTiming(1, { duration: motion.modalInMs });
+      panelScale.value = withTiming(1, { duration: motion.modalInMs, easing: Easing.out(Easing.cubic) });
     } else {
-      withTiming(scrimOpacity, { toValue: 0, duration: motion.modalInMs });
-      withTiming(panelScale, { toValue: 0.96, duration: motion.modalInMs });
+      scrimOpacity.value = withTiming(0, { duration: motion.modalInMs });
+      panelScale.value = withTiming(0.96, { duration: motion.modalInMs });
     }
   }, [visible]);
 
@@ -176,8 +172,8 @@ const styles = {
   backdrop: { position: 'absolute' as const, top: 0, left: 0, right: 0, bottom: 0 },
   panel: {
     width: 580,
-    maxWidth: '92%',
-    maxHeight: '92%',
+    maxWidth: '92%' as const,
+    maxHeight: '92%' as const,
     backgroundColor: colors.bgSurface,
     borderColor: colors.hairlineStrong,
     borderWidth: 1,
