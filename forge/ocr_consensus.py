@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import warnings
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from typing import Optional
@@ -72,6 +73,70 @@ def _has_digit(text: str) -> bool:
 
 def _digits_of(text: str) -> str:
     return "".join(ch for ch in text if ch.isdigit())
+
+
+# ---------------------------------------------------------------------------
+# PyTorch warning hygiene (EasyOCR on CPU)
+# ---------------------------------------------------------------------------
+def silence_easyocr_torch_warnings() -> None:
+    """Silence the internal PyTorch ``UserWarning``s EasyOCR emits on CPU-only boxes.
+
+    Two harmless, noisy warnings are known to fire when EasyOCR initializes and
+    runs without a GPU:
+
+    * ``torch.quantize_per_tensor ... are deprecated and will be removed in a
+      future PyTorch release`` — raised from
+      ``torch.ao.nn.quantized.dynamic.modules.rnn``; we never use quantized RNNs.
+    * ``'pin_memory' argument is set as true but no accelerator is found, then
+      device pinned memory won't be used.`` — raised from
+      ``torch.utils.data.dataloader`` because EasyOCR sets ``pin_memory=True``
+      unconditionally.
+
+    This must be called in *every* process that runs EasyOCR: on Windows,
+    ``ProcessPoolExecutor`` uses the ``spawn`` start method, so worker processes
+    do NOT inherit runtime ``warnings`` filters set by the parent.  Idempotent —
+    safe to call repeatedly (filters are additive).
+    """
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*torch\.quantize_per_tensor.*",
+        category=UserWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*'pin_memory' argument is set as true.*",
+        category=UserWarning,
+    )
+
+
+_EASYOCR_PREWARMED: bool = False
+
+
+def prewarm_easyocr_weights() -> None:
+    """Initialize EasyOCR once in the calling process so its weights are cached.
+
+    Builds ``easyocr.Reader(['en'], gpu=False, verbose=False)`` in the main
+    process *before* any ``ProcessPoolExecutor`` workers spawn, so the detection
+    (``craft_mlt_25k.pth``) and recognition (``english_g2.pth``) models are
+    downloaded/cached cleanly a single time instead of racing across worker
+    processes on first use.  Memoized per process; a failure does not raise —
+    the easyocr engine then degrades to empty token lists per page, exactly as
+    it would for a worker-side failure.
+    """
+    global _EASYOCR_PREWARMED
+    if _EASYOCR_PREWARMED:
+        return
+    silence_easyocr_torch_warnings()
+    try:
+        import easyocr  # type: ignore
+        easyocr.Reader(["en"], gpu=False, verbose=False)
+        _EASYOCR_PREWARMED = True
+    except Exception as exc:  # noqa: BLE001 - degrade; worker reports per page
+        print(
+            f"[ocr_consensus] EasyOCR pre-warm failed ({type(exc).__name__}: {exc}); "
+            "the easyocr engine will degrade to empty results.",
+            file=sys.stderr,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +268,10 @@ def _worker_tesseract(img: np.ndarray) -> list[dict]:
 
 def _worker_easyocr(img: np.ndarray) -> list[dict]:
     try:
+        # Worker entry point: Windows 'spawn' subprocesses do not inherit the
+        # parent's runtime warnings filters, so re-apply them here before torch
+        # is imported/used in this process.
+        silence_easyocr_torch_warnings()
         if "easy" not in _MODEL_CACHE:
             import easyocr  # type: ignore
             _MODEL_CACHE["easy"] = easyocr.Reader(["en"], gpu=False, verbose=False)
@@ -357,6 +426,7 @@ def run_ocr_engines(
     remaining engines still produce a usable consensus.
     """
     _ensure_verified()  # fail fast (with a diagnostic table) before spawning
+    prewarm_easyocr_weights()  # cache EasyOCR weights once, in the main process
 
     workers = max_workers or min(len(_ENGINE_FUNCS), os.cpu_count() or 1)
     workers = max(1, workers)

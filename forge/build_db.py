@@ -76,7 +76,9 @@ from forge.pdf_normalizer import (  # noqa: E402
 )
 from forge.ocr_consensus import (  # noqa: E402
     compute_consensus,
+    prewarm_easyocr_weights,
     run_ocr_engines,
+    silence_easyocr_torch_warnings,
     verify_ocr_engines,
 )
 from forge.vlm_enricher import (  # noqa: E402
@@ -367,6 +369,7 @@ def _make_engine_pools() -> Optional[tuple[list[ProcessPoolExecutor], list]]:
         fns = [oc._worker_rapidocr, oc._worker_tesseract, oc._worker_easyocr]
     except AttributeError:  # pragma: no cover - Task 2 API drift guard
         return None
+    prewarm_easyocr_weights()  # cache EasyOCR weights once before spawning workers
     pools = [ProcessPoolExecutor(max_workers=1) for _ in fns]
     return pools, fns
 
@@ -715,6 +718,11 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    # Entry point: silence EasyOCR's noisy internal PyTorch warnings before any
+    # torch import/initialization happens in this process (the pre-flight engine
+    # check builds an easyocr.Reader here).  Worker processes re-apply the same
+    # filters themselves (see ocr_consensus._worker_easyocr).
+    silence_easyocr_torch_warnings()
     parser = argparse.ArgumentParser(
         prog="python -m forge.build_db",
         description="Build the WIS+ SQLite knowledge base from raw manual PDFs "
