@@ -1,5 +1,5 @@
 /**
- * WIS+ — entry point.
+ * WIS+ — entry point (Task 8).
  *
  * React Native (Web) runs inside the Tauri v2 webview; `react-native` is aliased
  * to `react-native-web` in vite.config.ts. The default RNW stylesheet injects

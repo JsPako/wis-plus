@@ -60,6 +60,8 @@ interface QuickSearchProps {
   /** Active build filters forwarded to `/api/search`. */
   engine?: string;
   transmission?: string;
+  /** Manual source filter forwarded to `/api/search` (undefined = All). */
+  source?: 'WIS' | 'HAYNES';
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +145,7 @@ function ResultRow({
 // QuickSearch root
 // ---------------------------------------------------------------------------
 
-export default function QuickSearch({ visible, onClose, onOpenProcedure, engine, transmission }: QuickSearchProps) {
+export default function QuickSearch({ visible, onClose, onOpenProcedure, engine, transmission, source }: QuickSearchProps) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResultItem[] | null>(null);
   const [synonyms, setSynonyms] = useState<string[]>([]);
@@ -205,7 +207,7 @@ export default function QuickSearch({ visible, onClose, onOpenProcedure, engine,
     const t = setTimeout(async () => {
       const id = ++requestId.current;
       try {
-        const res = await api.search(q, { engine, transmission, limit: RESULT_LIMIT });
+        const res = await api.search(q, { engine, transmission, source, limit: RESULT_LIMIT });
         if (id !== requestId.current) return; // stale — a newer keystroke won
         setResults(res.results);
         setSynonyms(res.synonyms_matched);
@@ -223,7 +225,7 @@ export default function QuickSearch({ visible, onClose, onOpenProcedure, engine,
       }
     }, DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [query, visible, engine, transmission]);
+  }, [query, visible, engine, transmission, source]);
 
   // Keep the highlight index in range as results shrink.
   useEffect(() => {

@@ -1,18 +1,25 @@
 /**
- * WIS+ root component.
+ * WIS+ root component — Task 8 final assembly.
  *
  * Boot sequence: animated SplashScreen (WIS fade-in + amber "+" slide) until
- * `/api/health` responds, then the main shell — top bar with the Vehicle
- * Profile badge and the workshop body. If the backend reports
- * `configured === false`, the ProfileModal opens automatically; the user is
- * never assumed a car.
+ * `/api/health` responds, then the main shell:
+ *
+ *   ┌──────────────────────────────── top bar ────────────────────────────────┐
+ *   │ [← Back to Directory]  WIS+  [🔍 Spotlight Ctrl+Enter]  All|WIS|Haynes  [profile pill]  ⚙ Settings │
+ *   ├───────────────┬─────────────────────────────────────────────────────────┤
+ *   │ CategorySidebar (animated collapse)  │        routed view               │
+ *   │                    'directory' | 'procedure' | 'settings'              │
+ *   └───────────────┴─────────────────────────────────────────────────────────┘
+ *
+ * Global layers: ProfileModal (auto-opens when `profile.configured === false`)
+ * and the QuickSearch Spotlight (Ctrl+Enter from any screen, Esc closes).
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { api } from '@/api/client';
-import CategorySidebar from '@/components/CategorySidebar';
+import CategorySidebar, { type OpenedProcedureRef } from '@/components/CategorySidebar';
 import ProfileModal from '@/components/ProfileModal';
 import QuickSearch from '@/components/QuickSearch';
 import SplashScreen from '@/components/SplashScreen';
@@ -30,191 +37,328 @@ import {
 import { colors, radius, spacing, typography } from '@/theme/tokens';
 import { useGlobalShortcuts } from '@/hooks/useGlobalShortcuts';
 
-function AppShell() {
-  const [splashDone, setSplashDone] = useState(false);
-  const [profile, setProfile] = useState<VehicleProfile | null>(null);
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+// ---------------------------------------------------------------------------
+// Types & constants
+// ---------------------------------------------------------------------------
 
-  // Task 6 — directory tree, Spotlight search, Focused Mode.
-  const [directory, setDirectory] = useState<DirectoryCategory[] | null>(null);
-  const [dirLoading, setDirLoading] = useState(false);
-  const [dirError, setDirError] = useState<string | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [focused, setFocused] = useState<{ id: number; title: string } | null>(null);
+type AppView = 'directory' | 'procedure' | 'settings';
+type SourceFilter = 'ALL' | 'WIS' | 'HAYNES';
 
-  // After the splash: load profile + health. Auto-open the modal when the
-  // user has never configured their car.
-  useEffect(() => {
-    if (!splashDone) return;
-    let cancelled = false;
-    void api
-      .getProfile()
-      .then((p) => {
-        if (cancelled) return;
-        setProfile(p);
-        if (!p.configured) setModalOpen(true);
+interface FocusedProcedure { id: number; title: string }
+interface RecentItem { id: number; title: string }
+
+const RECENT_KEY = 'wisplus.recent.v1';
+const MAX_RECENT = 8;
+
+const SOURCE_FILTERS: ReadonlyArray<{ value: SourceFilter; label: string }> = [
+  { value: 'ALL', label: 'All' },
+  { value: 'WIS', label: 'WIS' },
+  { value: 'HAYNES', label: 'Haynes' },
+];
+
+function loadRecent(): RecentItem[] {
+  try {
+    const raw = window.localStorage.getItem(RECENT_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as unknown[])
+      .filter((r): r is RecentItem => {
+        const o = r as RecentItem;
+        return typeof o?.id === 'number' && typeof o?.title === 'string';
       })
-      .catch(() => undefined); // backend offline — badge shows 'select'
-    void api
-      .health()
-      .then((h) => !cancelled && setHealth(h))
-      .catch(() => !cancelled && setHealth(null));
-    return () => {
-      cancelled = true;
-    };
-  }, [splashDone]);
-
-  // Directory tree — refetches whenever the active build profile changes.
-  useEffect(() => {
-    if (!splashDone) return;
-    let cancelled = false;
-    setDirLoading(true);
-    setDirError(null);
-    void api
-      .directory(profile?.engine, profile?.transmission)
-      .then((tree) => !cancelled && setDirectory(tree))
-      .catch(() => !cancelled && setDirError('Failed to load the directory.'))
-      .finally(() => !cancelled && setDirLoading(false));
-    return () => {
-      cancelled = true;
-    };
-  }, [splashDone, profile]);
-
-  const handleSplashComplete = useCallback(() => setSplashDone(true), []);
-  const handleProfileSaved = useCallback((p: VehicleProfile) => {
-    setProfile(p);
-    setModalOpen(false);
-  }, []);
-
-  const badgeLabel = useMemo(() => {
-    if (!profile?.configured) return 'Select your car';
-    return `${optionLabel(ENGINE_OPTIONS, profile.engine)} · ${optionLabel(TRANSMISSION_OPTIONS, profile.transmission)}`;
-  }, [profile]);
-
-  // Global shortcuts: Ctrl+Enter toggles Spotlight; Escape unwinds the topmost layer.
-  useGlobalShortcuts({
-    onCtrlEnter: () => setSearchOpen((open) => !open),
-    onEscape: () => {
-      if (searchOpen) setSearchOpen(false);
-      else if (settingsOpen) setSettingsOpen(false);
-      else if (modalOpen) setModalOpen(false);
-      else if (focused !== null) setFocused(null); // back to the directory
-    },
-  });
-
-  const openProcedure = useCallback((procedure: { id: number; title: string }) => {
-    setFocused({ id: procedure.id, title: procedure.title });
-    setSearchOpen(false);
-  }, []);
-
-  if (!splashDone) {
-    return <SplashScreen onComplete={handleSplashComplete} />;
+      .slice(0, MAX_RECENT);
+  } catch {
+    return [];
   }
+}
 
-  const backendOnline = health?.status === 'ok' && health.db_loaded;
+function persistRecent(items: RecentItem[]): void {
+  try {
+    window.localStorage.setItem(RECENT_KEY, JSON.stringify(items));
+  } catch {
+    // storage unavailable — recents stay in-memory only
+  }
+}
 
+// ---------------------------------------------------------------------------
+// Small atoms (top bar + dashboard)
+// ---------------------------------------------------------------------------
+
+function Kbd({ label }: { label: string }) {
   return (
-    <View style={styles.root}>
-      {/* Top bar ---------------------------------------------------------- */}
-      <View style={styles.topBar}>
-        <View style={styles.brandRow}>
-          <Text style={styles.brand}>WIS</Text>
-          <Text style={styles.brandPlus}>+</Text>
-        </View>
-        <View style={styles.topBarRight}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Open quick search (Ctrl plus Enter)"
-          onPress={() => setSearchOpen(true)}
-          style={({ pressed }) => [styles.searchTrigger, pressed && { opacity: 0.85 }]}
-        >
-          <Text style={styles.searchIcon}>⌕</Text>
-          <Text numberOfLines={1} style={styles.searchLabel}>Search…</Text>
-          <View style={styles.kbdBadge}>
-            <Text style={styles.kbdText}>Ctrl + Enter</Text>
-          </View>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => setModalOpen(true)}
-          style={({ pressed }) => [styles.badge, !profile?.configured && styles.badgeUnset, pressed && { opacity: 0.85 }]}
-        >
-          <View style={[styles.badgeDot, !profile?.configured && { backgroundColor: colors.accentAmber }]} />
-          <Text numberOfLines={1} style={[styles.badgeLabel, !profile?.configured && { color: colors.accentAmber }]}>
-            {badgeLabel}
-          </Text>
-          <Text style={styles.badgeChevron}>›</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Open settings and themes"
-          onPress={() => setSettingsOpen(true)}
-          style={({ pressed }) => [styles.settingsBtn, pressed && { opacity: 0.85 }]}
-        >
-          <Text numberOfLines={1} style={styles.settingsBtnText}>⚙️ Settings</Text>
-        </Pressable>
+    <View style={styles.kbd}>
+      <Text style={styles.kbdText}>{label}</Text>
+    </View>
+  );
+}
+
+function ShortcutRow({ keys, desc }: { keys: string[]; desc: string }) {
+  return (
+    <View style={styles.shortcutRow}>
+      <View style={styles.kbdGroup}>
+        {keys.map((k) => <Kbd key={k} label={k} />)}
+      </View>
+      <Text style={styles.shortcutDesc}>{desc}</Text>
+    </View>
+  );
+}
+
+function StatChip({ label, value, tone }: { label: string; value: string; tone?: 'ok' | 'warn' | 'err' }) {
+  const valueColor =
+    tone === 'ok' ? colors.verifyGreen : tone === 'warn' ? colors.accentAmber : tone === 'err' ? colors.dangerRed : colors.textPrimary;
+  return (
+    <View style={styles.chip}>
+      <Text style={styles.chipLabel}>{label}</Text>
+      <Text numberOfLines={1} style={[styles.chipValue, { color: valueColor }]}>{value}</Text>
+    </View>
+  );
+}
+
+/** Quick-access dashboard shown in the 'directory' view (right pane). */
+function Dashboard({ health, recent, onOpenProcedure }: {
+  health: HealthResponse | null;
+  recent: RecentItem[];
+  onOpenProcedure: (p: { id: number; title: string }) => void;
+}) {
+  const online = health?.status === 'ok';
+  return (
+    <View style={styles.dashRoot}>
+      <Text style={typography.sectionLabel}>Workshop</Text>
+      <Text style={styles.dashSub}>
+        Pick a procedure from the directory, or press Ctrl+Enter to search everything.
+      </Text>
+
+      {/* Knowledge-base stats */}
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>Knowledge Base</Text>
+        <View style={styles.statRow}>
+          <StatChip label="Sidecar" value={online ? 'Online' : 'Offline'} tone={online ? 'ok' : 'err'} />
+          <StatChip label="Procedures" value={health?.db_loaded ? String(health.procedure_count) : '—'} />
+          <StatChip label="Database" value={health?.db_loaded ? 'Loaded' : 'Not loaded'} tone={health?.db_loaded ? 'ok' : 'warn'} />
         </View>
       </View>
 
-      {settingsOpen ? (
-        <SettingsView onBack={() => setSettingsOpen(false)} profile={profile} onProfileSaved={handleProfileSaved} />
-      ) : (
-      <View style={styles.bodyRow}>
+      {/* Recently opened procedures */}
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>Recent Procedures</Text>
+        {recent.length === 0 ? (
+          <Text style={styles.emptyText}>Nothing opened yet — recent work will appear here.</Text>
+        ) : (
+          recent.map((r) => (
+            <Pressable
+              key={r.id}
+              accessibilityRole="button"
+              onPress={() => onOpenProcedure(r)}
+              style={({ pressed }) => [styles.recentRow, pressed && { opacity: 0.8 }]}
+            >
+              <Text numberOfLines={1} style={styles.recentTitle}>{r.title}</Text>
+              <Text style={styles.recentId}>#{r.id}</Text>
+            </Pressable>
+          ))
+        )}
+      </View>
+
+      {/* System shortcuts */}
+      <View style={styles.card}>
+        <Text style={styles.cardLabel}>System Shortcuts</Text>
+        <ShortcutRow keys={['Ctrl', 'Enter']} desc="Spotlight search — from any screen" />
+        <ShortcutRow keys={['Esc']} desc="Back to directory / close the top layer" />
+        <ShortcutRow keys={['Click']} desc="Any torque value → verify it in the original scan" />
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shell
+// ---------------------------------------------------------------------------
+
+function AppShell() {
+  const [splashDone, setSplashDone] = useState(false);
+  const [view, setView] = useState<AppView>('directory');
+  const [focused, setFocused] = useState<FocusedProcedure | null>(null);
+
+  // Vehicle profile + backend health.
+  const [profile, setProfile] = useState<VehicleProfile | null>(null);
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
+
+  // Directory tree (Task 6).
+  const [directory, setDirectory] = useState<DirectoryCategory[] | null>(null);
+  const [dirLoading, setDirLoading] = useState(false);
+  const [dirError, setDirError] = useState<string | null>(null);
+
+  // Spotlight + source filter.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('ALL');
+
+  // Recently opened procedures (persisted per machine).
+  const [recent, setRecent] = useState<RecentItem[]>(loadRecent);
+  useEffect(() => { persistRecent(recent); }, [recent]);
+
+  // --- data loading -----------------------------------------------------------
+  const refreshHealth = useCallback(async () => {
+    try { setHealth(await api.health()); } catch { setHealth(null); }
+  }, []);
+
+  const loadDirectory = useCallback(async () => {
+    setDirLoading(true);
+    setDirError(null);
+    try {
+      setDirectory(await api.directory(profile?.engine ?? undefined, profile?.transmission ?? undefined));
+    } catch (err) {
+      setDirectory(null);
+      setDirError(err instanceof Error ? err.message : 'Failed to load the directory.');
+    } finally {
+      setDirLoading(false);
+    }
+  }, [profile?.engine, profile?.transmission]);
+
+  useEffect(() => {
+    if (!splashDone) return;
+    void refreshHealth();
+    void loadDirectory();
+  }, [splashDone, refreshHealth, loadDirectory]);
+
+  // First launch: never assume a car — prompt until the build is configured.
+  useEffect(() => {
+    if (splashDone && profile !== null && !profile.configured) {
+      setProfileModalOpen(true);
+    }
+  }, [splashDone, profile]);
+
+  // --- navigation -------------------------------------------------------------
+  const openProcedure = useCallback((p: OpenedProcedureRef | { id: number; title: string }) => {
+    setFocused({ id: p.id, title: p.title });
+    setRecent((prev) => [{ id: p.id, title: p.title }, ...prev.filter((r) => r.id !== p.id)].slice(0, MAX_RECENT));
+    setSearchOpen(false);
+    setView('procedure');
+  }, []);
+
+  const goBack = useCallback(() => {
+    setFocused(null);
+    setView('directory');
+  }, []);
+
+  const handleProfileSaved = useCallback((p: VehicleProfile) => {
+    setProfile(p);
+    setProfileModalOpen(false);
+    void loadDirectory(); // re-filter the tree for the newly saved build
+  }, [loadDirectory]);
+
+  // --- global shortcuts ---------------------------------------------------------
+  const handleEscape = useCallback(() => {
+    if (searchOpen) setSearchOpen(false);
+    else if (profileModalOpen) setProfileModalOpen(false);
+    else if (view !== 'directory') goBack();
+  }, [searchOpen, profileModalOpen, view, goBack]);
+
+  useGlobalShortcuts(
+    { onCtrlEnter: () => setSearchOpen(true), onEscape: handleEscape },
+    !splashDone,
+  );
+
+  const profileLabel = useMemo(() => {
+    if (!profile) return 'Loading profile…';
+    if (!profile.configured) return '⚙ Configure your build';
+    return `${optionLabel(ENGINE_OPTIONS, profile.engine)} · ${optionLabel(TRANSMISSION_OPTIONS, profile.transmission)}`;
+  }, [profile]);
+
+  if (!splashDone) {
+    return <SplashScreen onComplete={() => setSplashDone(true)} />;
+  }
+
+  const showBack = view !== 'directory';
+
+  return (
+    <View style={styles.root}>
+      {/* ── Top bar ─────────────────────────────────────────────────────── */}
+      <View style={styles.topBar}>
+        {showBack && (
+          <Pressable accessibilityRole="button" onPress={goBack} style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.7 }]}>
+            <Text style={styles.backText}>← Back to Directory</Text>
+          </Pressable>
+        )}
+
+        <View style={styles.brandWrap}>
+          <Text style={[typography.brand, { color: colors.textPrimary }]}>WIS</Text>
+          <Text style={[typography.brand, { color: colors.accentPrimary }]}>+</Text>
+        </View>
+
+        {/* Spotlight trigger — Ctrl + Enter */}
+        <Pressable accessibilityRole="button" onPress={() => setSearchOpen(true)} style={({ pressed }) => [styles.searchTrigger, pressed && { opacity: 0.75 }]}>
+          <Text style={styles.searchTriggerText}>🔍 Spotlight search</Text>
+          <Kbd label="Ctrl" />
+          <Kbd label="Enter" />
+        </Pressable>
+
+        {/* Source filter */}
+        <View style={styles.segGroup}>
+          {SOURCE_FILTERS.map((f) => (
+            <Pressable
+              key={f.value}
+              accessibilityRole="button"
+              onPress={() => setSourceFilter(f.value)}
+              style={[styles.segBtn, sourceFilter === f.value && styles.segBtnActive]}
+            >
+              <Text style={[styles.segText, sourceFilter === f.value && styles.segTextActive]}>{f.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        {/* Vehicle profile pill — opens the quick selector */}
+        <Pressable accessibilityRole="button" onPress={() => setProfileModalOpen(true)} style={({ pressed }) => [styles.pill, !profile?.configured && styles.pillUnset, pressed && { opacity: 0.75 }]}>
+          <Text numberOfLines={1} style={[styles.pillText, !profile?.configured && { color: colors.accentAmber }]}>{profileLabel}</Text>
+        </Pressable>
+
+        {/* Settings */}
+        <Pressable accessibilityRole="button" onPress={() => setView('settings')} style={({ pressed }) => [styles.gearBtn, view === 'settings' && styles.gearBtnActive, pressed && { opacity: 0.75 }]}>
+          <Text style={[styles.gearText, view === 'settings' && { color: colors.textOnAmber }]}>⚙️ Settings</Text>
+        </Pressable>
+      </View>
+
+      {/* ── Body: sidebar + routed view ─────────────────────────────────── */}
+      <View style={styles.body}>
         <CategorySidebar
           categories={directory}
           loading={dirLoading}
           error={dirError}
-          collapsed={focused !== null}
+          collapsed={view !== 'directory'}
           onOpenProcedure={openProcedure}
         />
-        <View style={styles.contentArea}>
-          {focused !== null ? (
-            <>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => setFocused(null)}
-                style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.85 }]}
-              >
-                <Text style={styles.backText}>← Back to Directory</Text>
-              </Pressable>
-              {/* Task 7 — split-screen workspace: extracted procedure (52%) +
-                  original PDF verification pane (48%). */}
-              <ProcedureView key={focused.id} id={focused.id} />
-            </>
-          ) : (
-            <View style={styles.placeholderWrap}>
-              <View style={styles.statusRow}>
-                <View style={[styles.statusDot, { backgroundColor: backendOnline ? colors.verifyGreen : colors.dangerRed }]} />
-                <Text style={styles.statusText}>
-                  {backendOnline
-                    ? `Backend online — ${health?.procedure_count ?? 0} procedures indexed`
-                    : 'Backend offline — start the sidecar (python -m backend.main)'}
-                </Text>
-              </View>
-              <Text style={styles.placeholderTitle}>Workshop ready.</Text>
-              <Text style={styles.placeholderBody}>
-                Pick a procedure from the directory, or press Ctrl + Enter for Spotlight search.
-              </Text>
-            </View>
-          )}
-        </View>
-      </View>
-      )}
 
+        {view === 'directory' && (
+          <Dashboard health={health} recent={recent} onOpenProcedure={openProcedure} />
+        )}
+
+        {view === 'procedure' && focused && (
+          <View style={styles.flex1}>
+            <ProcedureView id={focused.id} />
+          </View>
+        )}
+
+        {view === 'settings' && (
+          <View style={styles.flex1}>
+            <SettingsView onBack={goBack} profile={profile} onProfileSaved={handleProfileSaved} />
+          </View>
+        )}
+      </View>
+
+      {/* ── Global layers ───────────────────────────────────────────────── */}
       <QuickSearch
         visible={searchOpen}
         onClose={() => setSearchOpen(false)}
         onOpenProcedure={openProcedure}
-        engine={profile?.engine}
-        transmission={profile?.transmission}
+        engine={profile?.engine ?? undefined}
+        transmission={profile?.transmission ?? undefined}
+        source={sourceFilter === 'ALL' ? undefined : sourceFilter}
       />
 
       <ProfileModal
-        visible={modalOpen}
+        visible={profileModalOpen}
         initialProfile={profile}
-        onClose={() => setModalOpen(false)}
+        onClose={() => setProfileModalOpen(false)}
         onSaved={handleProfileSaved}
       />
     </View>
@@ -229,92 +373,95 @@ export default function App() {
   );
 }
 
-const styles = {
-  settingsBtn: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.hairlineStrong,
-    backgroundColor: colors.bgElevated,
-  },
-  settingsBtnText: { ...typography.caption, color: colors.textPrimary },
-  root: { flex: 1 as const, backgroundColor: colors.bgPrimary },
+// ---------------------------------------------------------------------------
+// Styles — every color flows through tokens.ts so the theme engine can
+// re-skin the shell without a reload.
+// ---------------------------------------------------------------------------
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: colors.bgPrimary },
+  body: { flex: 1, flexDirection: 'row' },
+  flex1: { flex: 1 },
+
+  // ── top bar ────────────────────────────────────────────────────────────
   topBar: {
-    height: 56,
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    justifyContent: 'space-between' as const,
-    paddingHorizontal: spacing.xl,
-    backgroundColor: colors.bgSurface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.hairline,
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
+    borderBottomWidth: 1, borderBottomColor: colors.borderSubtle, backgroundColor: colors.bgSurface,
   },
-  brandRow: { flexDirection: 'row' as const, alignItems: 'baseline' as const },
-  brand: { fontSize: 24, fontWeight: '800' as const, letterSpacing: 1.5, color: colors.textPrimary },
-  brandPlus: { fontSize: 26, fontWeight: '700' as const, color: colors.accentAmber },
-  badge: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    height: 38,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radius.pill,
-    backgroundColor: colors.bgElevated,
-    borderWidth: 1,
-    borderColor: colors.hairlineStrong,
-    maxWidth: 420,
-  },
-  badgeUnset: { borderColor: colors.accentAmber },
-  badgeDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.verifyGreen, marginRight: spacing.sm },
-  badgeLabel: { ...typography.rowLabel, flexShrink: 1 as const, color: colors.textPrimary },
-  badgeChevron: { color: colors.textSecondary, fontSize: 18, marginLeft: spacing.sm },
-  topBarRight: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: spacing.md },
-  searchTrigger: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    height: 38,
-    paddingHorizontal: spacing.md,
-    borderRadius: radius.pill,
-    backgroundColor: colors.bgElevated,
-    borderWidth: 1,
-    borderColor: colors.hairlineStrong,
-  },
-  searchIcon: { fontSize: 16, color: colors.textSecondary, marginRight: spacing.sm },
-  searchLabel: { ...typography.rowLabel, color: colors.textSecondary, marginRight: spacing.sm },
-  kbdBadge: {
-    paddingHorizontal: spacing.sm + 2,
-    paddingVertical: 2,
-    borderRadius: radius.xs,
-    borderWidth: 1,
-    borderColor: colors.hairlineStrong,
-    backgroundColor: colors.bgPrimary,
-  },
-  kbdText: { fontSize: 10, fontWeight: '700' as const, color: colors.textSecondary },
-  bodyRow: { flex: 1 as const, flexDirection: 'row' as const },
-  contentArea: { flex: 1 as const },
-  placeholderWrap: { flex: 1 as const, alignItems: 'center' as const, justifyContent: 'center' as const, padding: spacing.xxl },
   backBtn: {
-    alignSelf: 'flex-start' as const,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.pill,
-    backgroundColor: colors.bgElevated,
-    borderWidth: 1,
-    borderColor: colors.hairlineStrong,
-    marginBottom: spacing.xl,
+    height: 34, paddingHorizontal: spacing.md, borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.borderHairline, backgroundColor: colors.bgElevated,
+    alignItems: 'center', justifyContent: 'center',
   },
-  backText: { ...typography.rowLabel, color: colors.accentAmber },
-  statusRow: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    backgroundColor: colors.bgSurface,
-    borderRadius: radius.pill,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm + 2,
-    marginBottom: spacing.xxl,
+  backText: { ...typography.caption, color: colors.textSecondary },
+  brandWrap: { flexDirection: 'row', alignItems: 'baseline' },
+
+  searchTrigger: {
+    flex: 1, height: 36, borderRadius: radius.md, marginHorizontal: spacing.xs,
+    borderWidth: 1, borderColor: colors.borderHairline, backgroundColor: colors.bgPrimary,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs,
   },
-  statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: spacing.sm },
-  statusText: { ...typography.caption, color: colors.textSecondary },
-  placeholderTitle: { fontSize: 28, fontWeight: '800' as const, color: colors.textPrimary, marginBottom: spacing.md },
-  placeholderBody: { ...typography.body, color: colors.textSecondary },
-};
+  searchTriggerText: { ...typography.caption, color: colors.textMuted },
+
+  kbd: {
+    paddingHorizontal: 6, paddingVertical: 2, borderRadius: radius.sm,
+    borderWidth: 1, borderColor: colors.borderHairline, backgroundColor: colors.bgElevated,
+  },
+  kbdText: { ...typography.caption, fontSize: 10, color: colors.textMuted },
+
+  segGroup: {
+    flexDirection: 'row', borderRadius: radius.md, overflow: 'hidden',
+    borderWidth: 1, borderColor: colors.borderHairline, backgroundColor: colors.bgPrimary,
+  },
+  segBtn: { paddingHorizontal: spacing.md, paddingVertical: 8, alignItems: 'center', justifyContent: 'center' },
+  segBtnActive: { backgroundColor: colors.accentDim },
+  segText: { ...typography.caption, color: colors.textMuted },
+  segTextActive: { color: colors.accentAmber, fontWeight: '700' },
+
+  pill: {
+    height: 34, paddingHorizontal: spacing.md, borderRadius: radius.pill,
+    borderWidth: 1, borderColor: colors.borderHairline, backgroundColor: colors.bgElevated,
+    alignItems: 'center', justifyContent: 'center', maxWidth: 260,
+  },
+  pillUnset: { borderColor: colors.accentAmber },
+  pillText: { ...typography.caption, color: colors.textPrimary },
+
+  gearBtn: {
+    height: 34, paddingHorizontal: spacing.md, borderRadius: radius.md,
+    borderWidth: 1, borderColor: 'transparent', alignItems: 'center', justifyContent: 'center',
+  },
+  gearBtnActive: { backgroundColor: colors.accentDim, borderColor: colors.accentAmber },
+  gearText: { ...typography.caption, color: colors.textSecondary },
+
+  // ── dashboard (directory view, right pane) ─────────────────────────────
+  dashRoot: { flex: 1, paddingHorizontal: spacing.xxl, paddingTop: spacing.xl, gap: spacing.lg },
+  dashSub: { ...typography.body, color: colors.textMuted, marginTop: -6 },
+
+  card: {
+    backgroundColor: colors.bgSurface, borderRadius: radius.lg, borderWidth: 1,
+    borderColor: colors.borderHairline, padding: spacing.lg, gap: spacing.sm,
+  },
+  cardLabel: { ...typography.sectionLabel, marginBottom: spacing.xs },
+
+  statRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  chip: {
+    backgroundColor: colors.bgElevated, borderRadius: radius.lg, borderWidth: 1,
+    borderColor: colors.borderHairline, paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    minWidth: 120,
+  },
+  chipLabel: { ...typography.caption, color: colors.textMuted },
+  chipValue: { ...typography.body, fontWeight: '600' },
+
+  recentRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  recentTitle: { flex: 1, ...typography.body, color: colors.textPrimary },
+  recentId: { ...typography.caption, color: colors.textMuted },
+  emptyText: { ...typography.body, color: colors.textMuted },
+
+  shortcutRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: 2 },
+  kbdGroup: { flexDirection: 'row', gap: 4, minWidth: 96, justifyContent: 'flex-end' },
+  shortcutDesc: { flex: 1, ...typography.body, color: colors.textSecondary },
+});
