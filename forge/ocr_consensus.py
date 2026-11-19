@@ -24,10 +24,12 @@ from __future__ import annotations
 import math
 import os
 import sys
+import threading
+import time
 import warnings
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor
-from typing import Optional
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Optional, Sequence
 
 import numpy as np
 
@@ -297,6 +299,176 @@ def _worker_easyocr(img: np.ndarray) -> list[dict]:
 _ENGINE_FUNCS = (_worker_rapidocr, _worker_tesseract, _worker_easyocr)
 _ENGINE_NAMES = ("rapidocr", "tesseract", "easyocr")
 
+#: Public alias + console display names used by the progress tracker.
+ENGINE_NAMES: tuple[str, ...] = _ENGINE_NAMES
+_ENGINE_DISPLAY = {"rapidocr": "RapidOCR", "tesseract": "Tesseract", "easyocr": "EasyOCR"}
+
+
+# ---------------------------------------------------------------------------
+# Live per-engine OCR progress (console)
+#
+# Workers never write to the console.  They report completion exclusively by
+# returning from their submitted callable; the main process observes that via
+# ``concurrent.futures.as_completed`` and is the ONLY place that touches stdout.
+# That single-writer design guarantees the status line can never interleave or
+# garble across threads/processes.
+# ---------------------------------------------------------------------------
+def _write_status_line(line: str, prev_len: int) -> int:
+    """Overwrite a single console line via carriage return; returns new length."""
+    sys.stdout.write("\r" + line + " " * max(0, prev_len - len(line)))
+    sys.stdout.flush()
+    return len(line)
+
+
+class OCRProgressTracker:
+    """Track per-engine OCR completion across the pages of one document.
+
+    Usage (main process only)::
+
+        tracker = OCRProgressTracker(total_pages=page_count, label=file_name)
+        ...  # for each page: submit one task per engine, and when each future
+        ...  # completes call tracker.record(engine_name, elapsed_s, failed)
+        tracker.finish()
+
+    Rendering strategy:
+      * ``rich`` installed **and** stdout is a TTY  -> live multi-bar display
+        (one bar per engine).
+      * plain terminal (TTY)                         -> single-line status
+        overwritten with carriage returns, e.g.::
+
+            [OCR 01001.pdf] RapidOCR: 12/12 (100%, 34s) | Tesseract: 9/12 (75%, 28s) | EasyOCR: 6/12 (50%, 19s)
+      * redirected stdout (logs, CI)                 -> one full line per
+        page where all engines finished, plus the final summary — no \r flood.
+    """
+
+    def __init__(
+        self,
+        total_pages: int,
+        label: str = "",
+        engine_names: Sequence[str] = _ENGINE_NAMES,
+    ) -> None:
+        self._lock = threading.Lock()
+        self.total_pages = max(1, int(total_pages))
+        self.label = label
+        self.engine_names = tuple(engine_names)
+        self._done = {n: 0 for n in self.engine_names}
+        self._failed = {n: 0 for n in self.engine_names}
+        self._elapsed = {n: 0.0 for n in self.engine_names}
+        self._started_at = time.perf_counter()
+        # fallback renderer state
+        self._last_line_len = 0
+        self._last_full_page = -1   # highest page index where ALL engines finished
+        self._finished = False
+        # rich renderer (lazy; only when usable)
+        self._rich = None           # (progress, {engine: task_id})
+        try:
+            from rich.progress import (  # type: ignore
+                BarColumn, Progress, TextColumn, TimeElapsedColumn,
+            )
+            if sys.stdout.isatty():
+                progress = Progress(
+                    TextColumn("[bold]{task.description}"),
+                    BarColumn(),
+                    "[progress.percentage]{task.percentage:>3.0f}%",
+                    ", {task.completed}/{task.total} pg",
+                    TimeElapsedColumn(),
+                    console=None,
+                )
+                progress.start()
+                tasks = {
+                    n: progress.add_task(_ENGINE_DISPLAY.get(n, n), total=self.total_pages)
+                    for n in self.engine_names
+                }
+                self._rich = (progress, tasks)
+        except Exception:  # noqa: BLE001 - rich optional; fall back to \r lines
+            self._rich = None
+
+    @property
+    def is_tty(self) -> bool:
+        try:
+            return sys.stdout.isatty()
+        except Exception:  # noqa: BLE001
+            return False
+
+    def record(self, engine: str, elapsed_s: float, failed: bool = False) -> None:
+        """Register one completed engine task (called from the main process)."""
+        with self._lock:
+            if engine not in self._done:
+                return
+            self._done[engine] += 1
+            self._elapsed[engine] += max(0.0, float(elapsed_s))
+            if failed:
+                self._failed[engine] += 1
+            min_done = min(self._done.values())
+            all_finished = min_done == self.total_pages
+            line = self._render_fallback()
+        # render outside the lock: rich advances are thread-safe, and the \r
+        # writer is only ever called from this process's main thread anyway.
+        if self._rich is not None:
+            progress, tasks = self._rich
+            try:
+                progress.advance(tasks[engine], advance=1)
+            except Exception:  # noqa: BLE001 - display-only failure
+                pass
+        elif self.is_tty:
+            self._last_line_len = _write_status_line(line, self._last_line_len)
+        elif min_done > self._last_full_page:  # redirected: one line per page
+            self._last_full_page = min_done
+            print(line, flush=True)
+        if all_finished:
+            self.finish()
+
+    def _render_fallback(self) -> str:
+        """Build the single-line status string (caller holds the lock)."""
+        parts = []
+        for n in self.engine_names:
+            d = self._done[n]
+            pct = 100.0 * d / self.total_pages
+            disp = _ENGINE_DISPLAY.get(n, n)
+            extra = f", {self._elapsed[n]:.0f}s"
+            parts.append(f"{disp}: {d}/{self.total_pages} ({pct:.0f}%{extra})")
+        label = f"[OCR {self.label}] " if self.label else "[OCR] "
+        return label + " | ".join(parts)
+
+    def finish(self) -> None:
+        """Stop the display and print a one-line per-engine summary (idempotent)."""
+        with self._lock:
+            finished = min(self._done.values()) == self.total_pages
+            if self._finished:
+                return  # already summarized
+            if not finished:
+                # Early call (exception path): still stop any live display.
+                if self._rich is not None:
+                    try:
+                        self._rich[0].stop()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._rich = None
+                return
+            wall = time.perf_counter() - self._started_at
+            parts = []
+            for n in self.engine_names:
+                d, e = self._done[n], self._elapsed[n]
+                avg = e / d if d else 0.0
+                mark = f", {self._failed[n]} failed" if self._failed[n] else ""
+                parts.append(f"{_ENGINE_DISPLAY.get(n, n)}: {d}/{self.total_pages}, "
+                             f"{e:.1f}s total (avg {avg:.2f}s/page{mark})")
+            label = f"[OCR {self.label}] " if self.label else "[OCR] "
+            summary = f"{label}done in {wall:.1f}s | " + " | ".join(parts)
+            self._finished = True
+        if self._rich is not None:
+            try:
+                self._rich[0].stop()
+            except Exception:  # noqa: BLE001
+                pass
+            print(summary, flush=True)
+        elif self.is_tty:
+            sys.stdout.write("\n" + summary)
+            sys.stdout.flush()
+            self._last_line_len = 0
+        else:
+            print(summary, flush=True)
+
 
 # ---------------------------------------------------------------------------
 # Pre-flight engine verification.
@@ -417,6 +589,7 @@ def _ensure_verified(strict: bool = False) -> dict[str, bool]:
 def run_ocr_engines(
     img: np.ndarray,
     max_workers: Optional[int] = None,
+    progress: Optional["OCRProgressTracker"] = None,
 ) -> list[list[dict]]:
     """Run all three OCR engines on a normalized page image, in parallel.
 
@@ -424,6 +597,11 @@ def run_ocr_engines(
     (capped by the core count).  Returns a list of token lists **in engine order**
     ``[rapidocr, tesseract, easyocr]``; an engine that fails yields ``[]`` so the
     remaining engines still produce a usable consensus.
+
+    If a ``progress`` tracker is given, each engine's completion is recorded as
+    soon as its future resolves (via ``as_completed``), giving live per-engine
+    progress.  All console output happens here in the main process only — worker
+    processes never write to stdout.
     """
     _ensure_verified()  # fail fast (with a diagnostic table) before spawning
     prewarm_easyocr_weights()  # cache EasyOCR weights once, in the main process
@@ -432,19 +610,29 @@ def run_ocr_engines(
     workers = max(1, workers)
 
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(fn, img) for fn in _ENGINE_FUNCS]
-        results: list[list[dict]] = []
-        for name, f in zip(_ENGINE_NAMES, futures):
+        t_submit = time.perf_counter()
+        futures = {
+            executor.submit(fn, img): name
+            for fn, name in zip(_ENGINE_FUNCS, _ENGINE_NAMES)
+        }
+        results_by_name: dict[str, list[dict]] = {}
+        for fut in as_completed(futures):
+            name = futures[fut]
+            elapsed = time.perf_counter() - t_submit
             try:
-                results.append(f.result())
+                results_by_name[name] = fut.result()
+                failed = False
             except Exception as exc:  # per-engine failure: log loudly, degrade to []
                 print(
                     f"[ocr_consensus] engine '{name}' failed on this page "
                     f"({type(exc).__name__}: {exc}); continuing with the other engines.",
                     file=sys.stderr,
                 )
-                results.append([])
-    return results
+                results_by_name[name] = []
+                failed = True
+            if progress is not None:
+                progress.record(name, elapsed, failed=failed)
+    return [results_by_name[n] for n in _ENGINE_NAMES]
 
 
 # ---------------------------------------------------------------------------

@@ -45,7 +45,7 @@ import re
 import sqlite3
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -75,6 +75,8 @@ from forge.pdf_normalizer import (  # noqa: E402
     render_normalized_page,
 )
 from forge.ocr_consensus import (  # noqa: E402
+    ENGINE_NAMES,
+    OCRProgressTracker,
     compute_consensus,
     prewarm_easyocr_weights,
     run_ocr_engines,
@@ -374,17 +376,32 @@ def _make_engine_pools() -> Optional[tuple[list[ProcessPoolExecutor], list]]:
     return pools, fns
 
 
-def _ocr_page_pinned(pools_fns, gray: "np.ndarray") -> list[list[dict]]:
-    """Run all three engines on one preprocessed page via the pinned pools."""
+def _ocr_page_pinned(pools_fns, gray: "np.ndarray",
+                     progress=None) -> list[list[dict]]:
+    """Run all three engines on one preprocessed page via the pinned pools.
+
+    Returns token lists in engine order [rapidocr, tesseract, easyocr]; a failed
+    engine degrades to [] (mirrors run_ocr_engines semantics).
+
+    Completions are collected with ``as_completed`` so each engine updates the
+    optional ``progress`` tracker the moment it finishes — futures are the only
+    IPC boundary and all console output stays in this (main) process."""
     pools, fns = pools_fns
-    futures = [pools[i].submit(fns[i], gray) for i in range(len(fns))]
-    results: list[list[dict]] = []
-    for fut in futures:
+    t_submit = time.perf_counter()
+    futures = {pools[i].submit(fns[i], gray): i for i in range(len(fns))}
+    results: list[list[dict]] = [None] * len(fns)
+    for fut in as_completed(futures):
+        i = futures[fut]
+        elapsed = time.perf_counter() - t_submit
         try:
-            results.append(fut.result())
+            results[i] = fut.result()
+            failed = False
         except Exception as e:  # engine crash on a degenerate page is not fatal
             print(f"      [warn] OCR engine failed on this page: {e}", file=sys.stderr)
-            results.append([])
+            results[i] = []
+            failed = True
+        if progress is not None:
+            progress.record(ENGINE_NAMES[i], elapsed, failed=failed)
     return results
 
 
@@ -499,34 +516,35 @@ async def process_pdf(
         # ---- Pass 1: OCR (images freed immediately; tokens are tiny) --------
         engine_results: list[list[list[dict]]] = []   # [page][engine] -> tokens
         metas: list[dict] = []
+        ocr_progress = OCRProgressTracker(total_pages=page_count, label=file_name)
         for i in range(page_count):
             img, meta = render_normalized_page(doc, i, target_long_edge=target_long_edge)
             gray = preprocess_scan_for_ocr(img)
             if pools_fns is not None:
                 try:
-                    eng = _ocr_page_pinned(pools_fns, gray)
+                    eng = _ocr_page_pinned(pools_fns, gray, progress=ocr_progress)
                 except Exception as e:
                     import traceback
                     print(f"      [warn] OCR failed on {file_name} page {i+1}: "
                           f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
                           file=sys.stderr)
-                    eng = run_ocr_engines(gray)  # last-resort public API (raises if it also fails)
+                    eng = run_ocr_engines(gray, progress=ocr_progress)  # last-resort public API (raises if it also fails)
             else:
                 try:
-                    eng = run_ocr_engines(gray)
+                    eng = run_ocr_engines(gray, progress=ocr_progress)
                 except Exception as e:
                     import traceback
                     print(f"      [error] OCR failed on {file_name} page {i+1}: "
                           f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
                           file=sys.stderr)
+                    ocr_progress.finish()
                     raise RuntimeError(
                         f"OCR failed for {file_name} (page {i + 1}): {type(e).__name__}: {e}"
                     ) from e
             engine_results.append(eng)
             metas.append(meta)
             del img, gray
-            if (i + 1) % 25 == 0 or i + 1 == page_count:
-                print(f"      OCR: {i+1}/{page_count} pages")
+        ocr_progress.finish()  # idempotent: auto-fires on the last completion
 
         # ---- Repeating-margin boilerplate across the whole document ---------
         all_page_tokens = [
