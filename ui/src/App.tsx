@@ -16,13 +16,13 @@ import CategorySidebar from '@/components/CategorySidebar';
 import ProfileModal from '@/components/ProfileModal';
 import QuickSearch from '@/components/QuickSearch';
 import SplashScreen from '@/components/SplashScreen';
+import ProcedureView from '@/screens/ProcedureView';
 import {
   ENGINE_OPTIONS,
   TRANSMISSION_OPTIONS,
   optionLabel,
   type DirectoryCategory,
   type HealthResponse,
-  type ProcedureDetail,
   type VehicleProfile,
 } from '@/types/api';
 import { colors, radius, spacing, typography } from '@/theme/tokens';
@@ -165,10 +165,12 @@ export default function App() {
               >
                 <Text style={styles.backText}>← Back to Directory</Text>
               </Pressable>
-              <FocusedSummary id={focused.id} title={focused.title} />
+              {/* Task 7 — split-screen workspace: extracted procedure (52%) +
+                  original PDF verification pane (48%). */}
+              <ProcedureView key={focused.id} id={focused.id} />
             </>
           ) : (
-            <>
+            <View style={styles.placeholderWrap}>
               <View style={styles.statusRow}>
                 <View style={[styles.statusDot, { backgroundColor: backendOnline ? colors.verifyGreen : colors.dangerRed }]} />
                 <Text style={styles.statusText}>
@@ -181,7 +183,7 @@ export default function App() {
               <Text style={styles.placeholderBody}>
                 Pick a procedure from the directory, or press Ctrl + Enter for Spotlight search.
               </Text>
-            </>
+            </View>
           )}
         </View>
       </View>
@@ -200,73 +202,6 @@ export default function App() {
         onClose={() => setModalOpen(false)}
         onSaved={handleProfileSaved}
       />
-    </View>
-  );
-}
-
-/**
- * FocusedSummary — Focused Mode content for the selected procedure: identity,
- * step counts and a torque-spec preview. Task 7 replaces this with the full
- * page reader (scan image + bbox verification UI).
- */
-function FocusedSummary({ id, title }: { id: number; title: string }) {
-  const [detail, setDetail] = useState<ProcedureDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setDetail(null);
-    setError(null);
-    void api
-      .procedure(id)
-      .then((d) => !cancelled && setDetail(d))
-      .catch(() => !cancelled && setError('Failed to load the procedure.'));
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
-
-  const specLabel = (spec: ProcedureDetail['torque_specs'][number]): string =>
-    spec.value_ftlb != null ? `${spec.value_nm} Nm · ${spec.value_ftlb} ft·lb` : `${spec.value_nm} Nm`;
-
-  return (
-    <View style={styles.summaryCard}>
-      <Text numberOfLines={2} style={styles.summaryTitle}>{title}</Text>
-      {detail ? (
-        <>
-          <Text style={styles.summaryCrumb}>
-            {detail.category} › {detail.subcategory} · {detail.page.source_type} page {detail.page.page_number}
-          </Text>
-          <View style={styles.summaryMetaRow}>
-            <View style={styles.metaPill}>
-              <Text style={styles.metaPillText}>Removal · {detail.removal_steps.length} steps</Text>
-            </View>
-            <View style={styles.metaPill}>
-              <Text style={styles.metaPillText}>Installation · {detail.installation_steps.length} steps</Text>
-            </View>
-            {detail.tools_required.length > 0 ? (
-              <View style={styles.metaPill}>
-                <Text style={styles.metaPillText}>{detail.tools_required.length} tools</Text>
-              </View>
-            ) : null}
-          </View>
-        </>
-      ) : null}
-      {error ? <Text style={styles.summaryError}>{error}</Text> : null}
-      {detail && detail.torque_specs.length > 0 ? (
-        <View style={styles.torqueBlock}>
-          <Text style={styles.sectionLabel}>Torque specification</Text>
-          {detail.torque_specs.slice(0, 5).map((spec) => (
-            <View key={`${spec.component_name}-${spec.value_nm}`} style={styles.torqueRow}>
-              <Text numberOfLines={1} style={styles.torqueFastener}>{spec.component_name}</Text>
-              <Text style={styles.torqueValue}>{specLabel(spec)}</Text>
-            </View>
-          ))}
-          {detail.torque_specs.length > 5 ? (
-            <Text style={styles.summaryCrumb}>+{detail.torque_specs.length - 5} more in the full reader</Text>
-          ) : null}
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -324,7 +259,8 @@ const styles = {
   },
   kbdText: { fontSize: 10, fontWeight: '700' as const, color: colors.textSecondary },
   bodyRow: { flex: 1 as const, flexDirection: 'row' as const },
-  contentArea: { flex: 1 as const, alignItems: 'center' as const, justifyContent: 'center' as const, padding: spacing.xxl },
+  contentArea: { flex: 1 as const },
+  placeholderWrap: { flex: 1 as const, alignItems: 'center' as const, justifyContent: 'center' as const, padding: spacing.xxl },
   backBtn: {
     alignSelf: 'flex-start' as const,
     paddingHorizontal: spacing.lg,
@@ -336,26 +272,6 @@ const styles = {
     marginBottom: spacing.xl,
   },
   backText: { ...typography.rowLabel, color: colors.accentAmber },
-  summaryCard: {
-    width: '100%' as const,
-    maxWidth: 760,
-    backgroundColor: colors.bgSurface,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.hairline,
-    padding: spacing.xl,
-  },
-  summaryTitle: { fontSize: 24, fontWeight: '800' as const, color: colors.textPrimary, marginBottom: spacing.sm },
-  summaryCrumb: { ...typography.caption, color: colors.textSecondary, marginBottom: spacing.lg },
-  summaryMetaRow: { flexDirection: 'row' as const, gap: spacing.sm, marginBottom: spacing.lg, flexWrap: 'wrap' as const },
-  metaPill: { paddingHorizontal: spacing.md, paddingVertical: 4, borderRadius: radius.pill, backgroundColor: colors.bgElevated, borderWidth: 1, borderColor: colors.hairline },
-  metaPillText: { fontSize: 12, fontWeight: '600' as const, color: colors.textSecondary },
-  summaryError: { ...typography.body, color: colors.dangerRed },
-  torqueBlock: { borderTopWidth: 1, borderTopColor: colors.hairline, paddingTop: spacing.lg },
-  sectionLabel: { ...typography.caption, fontWeight: '700' as const, color: colors.textSecondary, marginBottom: spacing.sm },
-  torqueRow: { flexDirection: 'row' as const, justifyContent: 'space-between' as const, alignItems: 'center' as const, paddingVertical: spacing.sm + 2 },
-  torqueFastener: { ...typography.body, color: colors.textPrimary, flexShrink: 1 as const, marginRight: spacing.md },
-  torqueValue: { fontSize: 13, fontWeight: '700' as const, color: colors.accentAmber },
   statusRow: {
     flexDirection: 'row' as const,
     alignItems: 'center' as const,
