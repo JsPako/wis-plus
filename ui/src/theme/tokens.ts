@@ -1,5 +1,10 @@
 /**
- * WIS+ design tokens — "W201 Workshop Dark".
+ * WIS+ design tokens — live theme bridge (Task 7.5).
+ *
+ * Every color is a CSS custom property written onto <html> by the Theme
+ * Engine (`theme/ThemeContext.tsx`) at boot and on every theme switch, with
+ * Workshop Dark hex values as fallbacks — so this file remains the static
+ * default export even before the provider mounts.
  *
  * A high-contrast garage palette: deep matte charcoal surfaces, one loud
  * accent (Mercedes signal amber) for actions and the brand "+", plus clear
@@ -9,27 +14,33 @@
 
 export const colors = {
   // Core surfaces -----------------------------------------------------------
-  bgPrimary: '#121417',      // app background (deep matte charcoal)
-  bgSurface: '#1B1F24',      // cards, panels, modal bodies
-  bgElevated: '#242930',     // selected rows, chips, hover surfaces
+  bgPrimary: 'var(--wis-bg-primary, #121417)',       // app background
+  bgSurface: 'var(--wis-bg-surface, #1B1F24)',       // cards, panels, modal bodies
+  bgElevated: 'var(--wis-bg-elevated, #242930)',     // selected rows, chips, hover surfaces
+  borderSubtle: 'var(--wis-border-subtle, #2E343C)', // card outlines, dividers
 
   // Accents & status ---------------------------------------------------------
-  accentAmber: '#E5A93C',    // Mercedes signal amber — primary action + brand "+"
-  verifyGreen: '#2EA043',    // "verified against the original scan"
-  dangerRed: '#DA3633',      // errors, unverified / possibly-misread values
+  accentPrimary: 'var(--wis-accent-primary, #E5A93C)',   // primary action + brand "+"
+  accentSecondary: 'var(--wis-accent-secondary, #8FB6D9)',
+  /** Back-compat alias for pre-7.5 components — same var as accentPrimary. */
+  accentAmber: 'var(--wis-accent-primary, #E5A93C)',
+  verifyGreen: 'var(--wis-verify-green, #2EA043)',   // "verified against the original scan"
+  dangerRed: 'var(--wis-danger-red, #DA3633)',       // errors, unverified / misread values
 
   // Text ----------------------------------------------------------------------
-  textPrimary: '#F0F3F6',    // metallic white
-  textSecondary: '#9BA3AF',  // muted labels, hints
+  textPrimary: 'var(--wis-text-primary, #F0F3F6)',   // metallic white
+  textSecondary: 'var(--wis-text-secondary, #9BA3AF)', // muted labels, hints
+  textMuted: 'var(--wis-text-muted, #5F6771)',
 
   // Derived (kept here so components never invent new hex) --------------------
-  textOnAmber: '#121417',    // text on amber buttons
-  hairline: 'rgba(240, 243, 246, 0.08)',
-  hairlineStrong: 'rgba(240, 243, 246, 0.16)',
-  scrim: 'rgba(9, 10, 12, 0.62)',
-  amberDim: 'rgba(229, 169, 60, 0.14)',
+  /** Text on accent buttons — computed from the active theme's accent. */
+  textOnAmber: 'var(--wis-text-on-accent, #121417)',
+  hairline: 'var(--wis-hairline, rgba(240, 243, 246, 0.08))',
+  hairlineStrong: 'var(--wis-hairline-strong, rgba(240, 243, 246, 0.16))',
+  scrim: 'var(--wis-scrim, rgba(9, 10, 12, 0.62))',
+  amberDim: 'var(--wis-accent-dim, rgba(229, 169, 60, 0.14))',
   /** Shadow fill for elevated cards (Spotlight panel, modals). */
-  shadow: 'rgba(0, 0, 0, 0.5)',
+  shadow: 'var(--wis-shadow, rgba(0, 0, 0, 0.5))',
 } as const;
 
 export type ColorToken = keyof typeof colors;

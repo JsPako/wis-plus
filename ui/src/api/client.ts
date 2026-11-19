@@ -5,6 +5,7 @@
  */
 
 import type {
+  CustomThemeJson,
   DirectoryCategory,
   HealthResponse,
   ProcedureDetail,
@@ -69,6 +70,28 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+    }),
+
+  // ---------------------------------------------------------------------------
+  // Theme engine (Task 7.5) — custom themes + active theme persistence
+  // ---------------------------------------------------------------------------
+  /** GET /api/themes — list every valid custom theme in ./themes/*.json. */
+  getThemes: () => request<CustomThemeJson[]>('/api/themes'),
+
+  /** POST /api/themes — validate + persist a new theme as themes/{id}.json. */
+  importTheme: (theme: CustomThemeJson) =>
+    request<CustomThemeJson>('/api/themes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(theme),
+    }),
+
+  /** POST /api/profile — persist just the active theme id (merge, safe). */
+  setActiveTheme: (activeThemeId: string) =>
+    request<VehicleProfile>('/api/profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active_theme_id: activeThemeId }),
     }),
 
   /** GET /api/directory — collapsible index, filtered by the active profile. */

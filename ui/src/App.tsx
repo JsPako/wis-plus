@@ -17,6 +17,8 @@ import ProfileModal from '@/components/ProfileModal';
 import QuickSearch from '@/components/QuickSearch';
 import SplashScreen from '@/components/SplashScreen';
 import ProcedureView from '@/screens/ProcedureView';
+import SettingsView from '@/screens/SettingsView';
+import { ThemeProvider } from '@/theme/ThemeContext';
 import {
   ENGINE_OPTIONS,
   TRANSMISSION_OPTIONS,
@@ -28,11 +30,12 @@ import {
 import { colors, radius, spacing, typography } from '@/theme/tokens';
 import { useGlobalShortcuts } from '@/hooks/useGlobalShortcuts';
 
-export default function App() {
+function AppShell() {
   const [splashDone, setSplashDone] = useState(false);
   const [profile, setProfile] = useState<VehicleProfile | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Task 6 — directory tree, Spotlight search, Focused Mode.
   const [directory, setDirectory] = useState<DirectoryCategory[] | null>(null);
@@ -95,6 +98,7 @@ export default function App() {
     onCtrlEnter: () => setSearchOpen((open) => !open),
     onEscape: () => {
       if (searchOpen) setSearchOpen(false);
+      else if (settingsOpen) setSettingsOpen(false);
       else if (modalOpen) setModalOpen(false);
       else if (focused !== null) setFocused(null); // back to the directory
     },
@@ -143,10 +147,20 @@ export default function App() {
           </Text>
           <Text style={styles.badgeChevron}>›</Text>
         </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open settings and themes"
+          onPress={() => setSettingsOpen(true)}
+          style={({ pressed }) => [styles.settingsBtn, pressed && { opacity: 0.85 }]}
+        >
+          <Text numberOfLines={1} style={styles.settingsBtnText}>⚙️ Settings</Text>
+        </Pressable>
         </View>
       </View>
 
-      {/* Body — directory sidebar + Focused Mode content ------------------ */}
+      {settingsOpen ? (
+        <SettingsView onBack={() => setSettingsOpen(false)} profile={profile} onProfileSaved={handleProfileSaved} />
+      ) : (
       <View style={styles.bodyRow}>
         <CategorySidebar
           categories={directory}
@@ -187,6 +201,7 @@ export default function App() {
           )}
         </View>
       </View>
+      )}
 
       <QuickSearch
         visible={searchOpen}
@@ -206,7 +221,24 @@ export default function App() {
   );
 }
 
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AppShell />
+    </ThemeProvider>
+  );
+}
+
 const styles = {
+  settingsBtn: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.hairlineStrong,
+    backgroundColor: colors.bgElevated,
+  },
+  settingsBtnText: { ...typography.caption, color: colors.textPrimary },
   root: { flex: 1 as const, backgroundColor: colors.bgPrimary },
   topBar: {
     height: 56,

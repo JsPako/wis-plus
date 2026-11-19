@@ -25,10 +25,40 @@ export interface VehicleProfile {
   year: number | null;            // 1983..1993
   facelift: Facelift | null;
   configured: boolean;            // false until the user explicitly picks a build
+  /** Active theme id (Task 7.5) — defaults to 'workshop-dark'. */
+  active_theme_id: string;
 }
 
+/** POST /api/profile — body. Backend merges: only fields present are changed, so the Settings screen can update the car profile and the Theme Engine can persist `active_theme_id` without clobbering each other. */
 export type SaveProfilePayload = Pick<VehicleProfile, 'engine' | 'transmission'> &
-  Partial<Pick<VehicleProfile, 'year' | 'facelift'>>;
+  Partial<Pick<VehicleProfile, 'year' | 'facelift' | 'active_theme_id'>>;
+
+// ---------------------------------------------------------------------------
+// Theme engine (Task 7.5) — wire shape of themes/*.json and /api/themes.
+// Mirrors backend/theme_loader.py:ThemeFile exactly.
+// ---------------------------------------------------------------------------
+export interface CustomThemeColors {
+  bgPrimary: string;
+  bgSurface: string;
+  bgElevated: string;
+  borderSubtle: string;
+  accentPrimary: string;
+  accentSecondary: string;
+  verifyGreen: string;
+  dangerRed: string;
+  textPrimary: string;
+  textSecondary: string;
+  textMuted: string;
+}
+
+export interface CustomThemeJson {
+  id: string;              // slug, e.g. 'silver-arrow'
+  name: string;
+  description: string;
+  author: string;
+  isDark: boolean;
+  colors: CustomThemeColors;
+}
 
 /** A selectable option in the profile modal: display label + filter token. */
 export interface ProfileOption {

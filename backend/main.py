@@ -40,15 +40,18 @@ from pydantic import BaseModel, Field
 
 from shared.models import TorqueSpecRow, load_json
 from search_engine import HybridSearchEngine
+from theme_loader import ThemeFile, load_custom_themes, save_custom_theme
 
 log = logging.getLogger("wisplus.api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 PDF_DIR = ROOT / "pdfs"
+THEMES_DIR = ROOT / "themes"            # user-dropped custom themes (Task 7.5)
 USER_CONFIG_PATH = ROOT / "user_config.json"
 
 DEFAULT_PROFILE = {"engine": "ALL", "transmission": "ALL", "year": None,
-                   "facelift": None, "configured": False}
+                   "facelift": None, "configured": False,
+                   "active_theme_id": "workshop-dark"}
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +64,8 @@ class UserConfig(BaseModel):
     year: Optional[int] = Field(None, ge=1983, le=1993)
     facelift: Optional[str] = Field(None, pattern="^(pre-facelift|facelift)$")
     configured: bool = False
+    #: Active theme id — a built-in preset or one of the ids in themes/*.json.
+    active_theme_id: str = Field("workshop-dark", min_length=1, max_length=64)
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +73,7 @@ class UserConfig(BaseModel):
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    THEMES_DIR.mkdir(parents=True, exist_ok=True)    # theme drop-folder (Task 7.5)
     app.state.engine = HybridSearchEngine()          # opens DB ro, loads matrix
     yield
     app.state.engine.close()
@@ -124,14 +130,54 @@ def get_profile() -> UserConfig:
 
 
 @app.post("/api/profile", response_model=UserConfig)
-def post_profile(config: UserConfig) -> UserConfig:
-    """Persist the user's engine / transmission / year / facelift choice."""
-    config.configured = True
+def post_profile(payload: UserConfig) -> UserConfig:
+    """Persist a *partial* profile update (merge semantics).
+
+    Only fields present in the request body are changed, so the theme engine
+    can POST ``{"active_theme_id": ...}`` without clobbering the user's car
+    configuration — and ProfileModal can save engine/transmission without
+    touching the theme.
+    """
+    current = _read_profile()
+    provided = payload.model_dump(exclude_unset=True)
+    merged = {**current.model_dump(), **provided}
+    config = UserConfig(**merged)
+    if "engine" in provided or "transmission" in provided:
+        config.configured = True          # user explicitly picked a build
+    else:
+        config.configured = current.configured
     USER_CONFIG_PATH.write_text(
         json.dumps(config.model_dump(), indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+    log.info("profile saved: %s / %s (theme=%s)", config.engine, config.transmission,
+             config.active_theme_id)
     return config
+
+
+# ---------------------------------------------------------------------------
+# Theme engine (Task 7.5) — custom themes live in ./themes/*.json
+# ---------------------------------------------------------------------------
+@app.get("/api/themes")
+def list_custom_themes() -> list[dict]:
+    """All valid custom themes found in the local ``themes/`` directory.
+
+    Invalid files are skipped server-side (see theme_loader), so this always
+    returns a clean list the UI merges with its 8 built-in presets."""
+    return [t.model_dump() for t in load_custom_themes(THEMES_DIR)]
+
+
+@app.post("/api/themes", status_code=201)
+def create_custom_theme(theme: ThemeFile) -> dict:
+    """Validate and persist a newly imported theme as ``themes/{id}.json``."""
+    try:
+        path = save_custom_theme(theme, THEMES_DIR)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not write theme file: {exc}") from exc
+    log.info("imported custom theme '%s' -> %s", theme.id, path.name)
+    return theme.model_dump()
 
 
 # ---------------------------------------------------------------------------

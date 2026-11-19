@@ -1,0 +1,20 @@
+{
+  "id": "silver-arrow",
+  "name": "Silver Arrow",
+  "description": "Template custom theme — a nod to the W196 Silver Arrow: cool silver on deep graphite with a racing-blue secondary. Duplicate this file into themes/, tweak the hex values, then hit 'Reload themes/ Folder' in Settings.",
+  "author": "WIS+ Team",
+  "isDark": true,
+  "colors": {
+    "bgPrimary": "#14171B",
+    "bgSurface": "#1C2026",
+    "bgElevated": "#262C34",
+    "borderSubtle": "#39414D",
+    "accentPrimary": "#9FB4CC",
+    "accentSecondary": "#3E6FD9",
+    "verifyGreen": "#37B26A",
+    "dangerRed": "#E05252",
+    "textPrimary": "#F2F5F9",
+    "textSecondary": "#A7B0BD",
+    "textMuted": "#6E7887"
+  }
+}
