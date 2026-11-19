@@ -66,6 +66,12 @@ user_config.json
 .env.*
 
 # ---------------------------------------------------------------------------
+# Local llama.cpp binaries (downloaded by scripts/install_llama.ps1)
+# Keep the folder local — never commit exes/DLLs.
+# ---------------------------------------------------------------------------
+tools/
+
+# ---------------------------------------------------------------------------
 # OS / editor noise
 # ---------------------------------------------------------------------------
 Thumbs.db
@@ -74,3 +80,4 @@ desktop.ini
 .idea/
 .vscode/
 *.swp
+tools/llama.cpp/
