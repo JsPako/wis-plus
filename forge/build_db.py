@@ -57,7 +57,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import fitz  # pymupdf — hard dependency (forge/requirements.txt)
+import pymupdf  # PyMuPDF — hard dependency (forge/requirements.txt)
 
 from shared.models import (  # noqa: E402
     ProcedureRecord,
@@ -143,8 +143,8 @@ def insert_document(
     conn: sqlite3.Connection,
     file_name: str,
     source_type: str,
-    section: Optional[int],
-    subsection: Optional[int],
+    section: Optional[str],
+    subsection: Optional[str],
     page_count: int,
     checksum: str,
 ) -> tuple[int, bool]:
@@ -152,7 +152,7 @@ def insert_document(
     row with an identical sha256 means the file was already ingested this run
     (duplicate in --pdf-dir) and can be skipped."""
     cur = conn.execute(
-        "SELECT id, checksum_sha256 FROM documents WHERE file_name = ?",
+        "SELECT id, checksum_sha256 FROM documents WHERE filename = ?",
         (file_name,),
     )
     row = cur.fetchone()
@@ -161,7 +161,7 @@ def insert_document(
             return int(row["id"]), False
         conn.execute("DELETE FROM documents WHERE id = ?", (row["id"],))  # cascade
     cur = conn.execute(
-        "INSERT INTO documents (file_name, source_type, section, subsection,"
+        "INSERT INTO documents (filename, source_type, wis_section, wis_subsection,"
         " page_count, checksum_sha256) VALUES (?, ?, ?, ?, ?, ?)",
         (file_name, source_type, section, subsection, page_count, checksum),
     )
@@ -212,9 +212,10 @@ def insert_torque_spec(
 ) -> None:
     conn.execute(
         "INSERT INTO torque_specs (procedure_id, page_id, component_name, value_nm,"
-        " value_ftlb, raw_text, step_mode, bbox) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        " value_ftlb, raw_text, step_mode, bbox_x0, bbox_y0, bbox_x1, bbox_y1)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (procedure_id, page_id, row.component_name, row.value_nm, row.value_ftlb,
-         row.raw_text, row.step_mode, dump_json(row.bbox.model_dump())),
+         row.raw_text, row.step_mode, row.bbox_x0, row.bbox_y0, row.bbox_x1, row.bbox_y1),
     )
 
 
@@ -308,17 +309,20 @@ def _steps_to_records(raw_steps: list[dict], tokens: list[dict]) -> list[Procedu
     return out
 
 
-def _torque_rows(payload: dict, tokens: list[dict]) -> list[TorqueSpecRow]:
+def _torque_rows(payload: dict, tokens: list[dict],
+                 procedure_id: int, page_id: int) -> list[TorqueSpecRow]:
     rows: list[TorqueSpecRow] = []
     for t in payload["torque_specs"]:
         bbox = match_torque_bbox(t["raw_text"], tokens)
         rows.append(TorqueSpecRow(
+            procedure_id=procedure_id,
+            page_id=page_id,
             component_name=t["component_name"],
             value_nm=t["value_nm"],
             value_ftlb=t["value_ftlb"],
             raw_text=t["raw_text"],
             step_mode=StepMode(t["step_mode"]),
-            bbox=bbox,
+            bbox_x0=bbox.x0, bbox_y0=bbox.y0, bbox_x1=bbox.x1, bbox_y1=bbox.y1,
         ))
     return rows
 
@@ -379,7 +383,7 @@ async def process_pdf(
     checksum = sha256_file(pdf_path)
     doc_hash16 = checksum[:16]   # cache-key truncation; full hash stored in DB
 
-    with fitz.open(str(pdf_path)) as doc:
+    with pymupdf.open(str(pdf_path)) as doc:
         page_count = len(doc)
         if max_pages is not None:
             page_count = min(page_count, max_pages)
@@ -488,12 +492,11 @@ async def process_pdf(
             if search_text:
                 proc_ids_for_embed.append((proc_id, search_text))
 
-            for trow in _torque_rows(payload, tokens):
+            for trow in _torque_rows(payload, tokens, proc_id, page_id):
                 insert_torque_spec(conn, proc_id, page_id, trow)
                 stats.torque_specs_indexed += 1
-                b = trow.bbox
-                if not (b.x0 <= 1e-9 and b.y0 <= 1e-9 and b.x1 >= 1 - 1e-9
-                        and b.y1 >= 1 - 1e-9):
+                if not (trow.bbox_x0 <= 1e-9 and trow.bbox_y0 <= 1e-9
+                        and trow.bbox_x1 >= 1 - 1e-9 and trow.bbox_y1 >= 1 - 1e-9):
                     stats.torque_bboxes_matched += 1
 
             if payload.get("disputed_resolutions"):
@@ -628,5 +631,5 @@ def main(argv: Optional[list[str]] = None) -> int:
     return run(args)
 
 
-if __name__ == "main":
+if __name__ == "__main__":
     sys.exit(main())

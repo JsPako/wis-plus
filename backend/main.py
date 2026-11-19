@@ -34,7 +34,7 @@ for _p in (str(ROOT), str(BACKEND_DIR)):   # works via `python -m backend.main` 
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import fitz  # PyMuPDF — original-scan page rendering
+import pymupdf  # PyMuPDF (>= 1.24) — original-scan page rendering
 from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
@@ -271,7 +271,7 @@ def _render_pdf_page(document_id: int, filename: str, page_number: int, dpi: int
     pdf_path = PDF_DIR / filename
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail=f"PDF file missing: {filename}")
-    with fitz.open(pdf_path) as doc:
+    with pymupdf.open(pdf_path) as doc:
         if page_number < 1 or page_number > len(doc):
             raise HTTPException(
                 status_code=404,
@@ -279,7 +279,7 @@ def _render_pdf_page(document_id: int, filename: str, page_number: int, dpi: int
             )
         page = doc.load_page(page_number - 1)
         zoom = dpi / 72.0
-        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
         return pix.tobytes("png")
 
 

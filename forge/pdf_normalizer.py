@@ -23,10 +23,10 @@ from typing import Optional
 import cv2
 import numpy as np
 
-try:  # PyMuPDF ships the C extension under the name ``fitz``.
-    import fitz  # type: ignore
+try:  # Modern PyMuPDF (>= 1.24): import as ``pymupdf`` (legacy ``fitz`` alias emits FutureWarning).
+    import pymupdf  # type: ignore
 except ImportError:  # pragma: no cover - pymupdf is a hard dependency
-    fitz = None  # type: ignore
+    pymupdf = None  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ def parse_wis_filename(filename: str) -> tuple[str | None, str | None]:
 # Normalized page rasterization
 # ---------------------------------------------------------------------------
 def render_normalized_page(
-    doc: "fitz.Document",
+    doc: "pymupdf.Document",
     page_index: int,
     target_long_edge: int = 2200,
 ) -> tuple[np.ndarray, dict]:
@@ -97,8 +97,8 @@ def render_normalized_page(
                ``{orientation, norm_width, norm_height, scale_factor}`` plus the
                pixel dimensions and source rotation for downstream coordinate math.
     """
-    if fitz is None:  # pragma: no cover
-        raise RuntimeError("pymupdf (fitz) is not installed")
+    if pymupdf is None:  # pragma: no cover
+        raise RuntimeError("pymupdf is not installed")
 
     page = doc[page_index]
     rect = page.rect
@@ -108,9 +108,9 @@ def render_normalized_page(
     # Exact zoom so the longest edge lands on target. max() is symmetric, so this
     # stays correct whether the page is portrait, landscape, or rotated.
     scale_factor = float(target_long_edge) / float(max(rect.width, rect.height))
-    matrix = fitz.Matrix(scale_factor, scale_factor)
+    matrix = pymupdf.Matrix(scale_factor, scale_factor)
 
-    pix = page.get_pixmap(matrix=matrix, alpha=False, colorspace=fitz.csRGB)
+    pix = page.get_pixmap(matrix=matrix, alpha=False, colorspace=pymupdf.csRGB)
     img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
     if pix.n != 3:  # defensive: force RGB
         img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB) if pix.n == 4 else img[:, :, :3]
