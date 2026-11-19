@@ -88,6 +88,8 @@ class HybridSearchEngine:
         self.db_path = Path(db_path)
         self.db_loaded = False
         self.procedure_count = 0
+        #: Human-readable reason when db_loaded is False (None == healthy).
+        self.db_error: Optional[str] = None
 
         # Embedding matrix (N x dim), L2-normalized rows, C-contiguous float32.
         self._embed_matrix: Optional[np.ndarray] = None
@@ -104,9 +106,28 @@ class HybridSearchEngine:
         self.last_expansion: list[str] = []
 
         if self.db_path.exists():
-            self._open_db()
+            try:
+                self._open_db()
+            except Exception as exc:  # corrupt/empty DB, missing schema, locked file ...
+                self._conn = None
+                self.db_loaded = False
+                self.db_error = (
+                    f"Could not open database at {self.db_path} "
+                    f"({type(exc).__name__}: {exc}). Rebuild it with forge.build_db "
+                    f"or restore a good copy of w201_kb.sqlite into data/."
+                )
+                log.error("knowledge base failed to open at %s (%s: %s) — starting in DEGRADED mode with no data.",
+                          self.db_path, type(exc).__name__, exc)
         else:
-            log.warning("knowledge base not found at %s — running empty", self.db_path)
+            self.db_error = (
+                f"Database not found at {self.db_path} — run forge.build_db on Windows "
+                f"or copy w201_kb.sqlite into data/."
+            )
+            log.warning(
+                "Database not found at %s — run forge.build_db on Windows or copy "
+                "w201_kb.sqlite into data/. Starting in DEGRADED mode with no searchable data.",
+                self.db_path,
+            )
 
     # -- lifecycle -----------------------------------------------------------
     def _open_db(self) -> None:

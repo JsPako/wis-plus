@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from typing import Optional
@@ -86,6 +87,22 @@ def _digits_of(text: str) -> str:
 _MODEL_CACHE: dict = {}
 
 
+def _log_worker_failure(engine: str) -> None:
+    """Print the full traceback of a per-engine OCR failure to stderr.
+
+    Workers run in separate OS processes under ``ProcessPoolExecutor``; an
+    exception that is not logged there is effectively silent (it only resurfaces,
+    if at all, as a bare re-raise at the caller).  Logging it here — tagged with
+    the engine name — guarantees the failure is never invisible.  The exception is
+    then re-raised so the caller (which knows the PDF filename + page number) can
+    add that context before degrading to an empty token list.
+    """
+    import traceback
+
+    print(f"[ocr_consensus] OCR worker '{engine}' failed:", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
+
+
 def _worker_rapidocr(img: np.ndarray) -> list[dict]:
     try:
         if "rapid" not in _MODEL_CACHE:
@@ -126,7 +143,8 @@ def _worker_rapidocr(img: np.ndarray) -> list[dict]:
                 cx = wx1 + 0.5 * unit
         return tokens
     except Exception:
-        return []
+        _log_worker_failure("rapidocr")
+        raise
 
 
 _TESSERACT_CANDIDATES = (
@@ -179,7 +197,8 @@ def _worker_tesseract(img: np.ndarray) -> list[dict]:
             })
         return tokens
     except Exception:
-        return []
+        _log_worker_failure("tesseract")
+        raise
 
 
 def _worker_easyocr(img: np.ndarray) -> list[dict]:
@@ -202,11 +221,128 @@ def _worker_easyocr(img: np.ndarray) -> list[dict]:
             })
         return tokens
     except Exception:
-        return []
+        _log_worker_failure("easyocr")
+        raise
 
 
 _ENGINE_FUNCS = (_worker_rapidocr, _worker_tesseract, _worker_easyocr)
 _ENGINE_NAMES = ("rapidocr", "tesseract", "easyocr")
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight engine verification.
+#
+# Run once in the main process *before* any ProcessPoolExecutor worker is
+# spawned, so a missing dependency (package not installed, tesseract.exe not on
+# PATH, corrupt model) fails fast with an actionable diagnostic table instead of
+# surfacing as an opaque crash inside a detached worker process.
+# ---------------------------------------------------------------------------
+_VERIFY_CACHE: dict = {}
+
+
+def verify_ocr_engines(strict: bool = False) -> dict[str, bool]:
+    """Check that each OCR engine can actually run on this machine.
+
+    Returns ``{engine_name: available_bool}`` for all three engines and prints a
+    diagnostic table when the check fails.  Raises :class:`RuntimeError` when
+    fewer than two engines are usable (spatial consensus needs a >=2/3 majority)
+    or — when ``strict`` is set — when *any* engine is missing.
+
+    Parameters
+    ----------
+    strict
+        Require all three engines (full 3-engine consensus).  Default ``False``
+        allows running with any two of the three.
+    """
+    status: dict[str, bool] = {}
+    reasons: dict[str, str] = {}
+
+    # --- RapidOCR -----------------------------------------------------------
+    try:
+        from rapidocr_onnxruntime import RapidOCR  # type: ignore
+        RapidOCR()  # construct once to surface onnxruntime/model problems early
+        status["rapidocr"] = True
+        reasons["rapidocr"] = "ok"
+    except Exception as exc:  # noqa: BLE001 - report any failure mode
+        status["rapidocr"] = False
+        reasons["rapidocr"] = f"{type(exc).__name__}: {exc}"
+
+    # --- Tesseract ----------------------------------------------------------
+    try:
+        import shutil as _shutil
+        import pytesseract  # type: ignore
+        tesseract_cmd = _shutil.which("tesseract") or _resolve_tesseract_cmd()
+        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        pytesseract.get_tesseract_version()  # actually execute the binary
+        status["tesseract"] = True
+        reasons["tesseract"] = f"ok ({tesseract_cmd})"
+    except FileNotFoundError:
+        status["tesseract"] = False
+        if os.name == "nt":
+            reasons["tesseract"] = (
+                "Tesseract binary not found on PATH. Install Tesseract OCR "
+                "(e.g. winget install UB-Mannheim.TesseractOCR) and add its "
+                "folder to PATH."
+            )
+        else:
+            reasons["tesseract"] = (
+                "Tesseract binary not found on PATH or in standard locations. "
+                "Install it (e.g. 'sudo pacman -S tesseract' or "
+                "'brew install tesseract')."
+            )
+    except Exception as exc:  # noqa: BLE001
+        status["tesseract"] = False
+        reasons["tesseract"] = f"{type(exc).__name__}: {exc}"
+
+    # --- EasyOCR ------------------------------------------------------------
+    try:
+        import easyocr  # type: ignore
+        easyocr.Reader(["en"], gpu=False, verbose=False)
+        status["easyocr"] = True
+        reasons["easyocr"] = "ok"
+    except Exception as exc:  # noqa: BLE001
+        status["easyocr"] = False
+        reasons["easyocr"] = f"{type(exc).__name__}: {exc}"
+
+    available = sum(1 for ok in status.values() if ok)
+    fail = (available < 2) or (strict and available < len(status))
+
+    if fail:
+        name_w = max(len(n) for n in _ENGINE_NAMES) + 2
+        reason_w = max(len(v) for v in reasons.values())
+        bar = "-" * (name_w + 8 + reason_w)
+        print("\n[ocr_consensus] OCR engine pre-flight check FAILED:", file=sys.stderr)
+        print("  " + bar, file=sys.stderr)
+        for name in _ENGINE_NAMES:
+            mark = "OK  " if status.get(name) else "FAIL"
+            print(f"  {name:<{name_w}} [{mark}] {reasons.get(name, 'unknown')}",
+                  file=sys.stderr)
+        print("  " + bar, file=sys.stderr)
+        if available < 2:
+            print(
+                f"  Only {available}/3 OCR engines are available; spatial consensus "
+                "needs at least 2. Fix the FAILing engine(s) above and re-run.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "  Strict 3-engine consensus was requested but an engine is missing. "
+                "Fix it, or re-run without --strict to allow any 2 of 3.",
+                file=sys.stderr,
+            )
+        raise RuntimeError(
+            f"OCR pre-flight check failed: {available}/3 engines available "
+            f"(need {'3' if strict else '>=2'}). See diagnostic table above."
+        )
+
+    return status
+
+
+def _ensure_verified(strict: bool = False) -> dict[str, bool]:
+    """Run :func:`verify_ocr_engines` at most once per process (memoized)."""
+    if "status" not in _VERIFY_CACHE:
+        _VERIFY_CACHE["status"] = verify_ocr_engines(strict=strict)
+    return _VERIFY_CACHE["status"]
 
 
 def run_ocr_engines(
@@ -220,12 +356,24 @@ def run_ocr_engines(
     ``[rapidocr, tesseract, easyocr]``; an engine that fails yields ``[]`` so the
     remaining engines still produce a usable consensus.
     """
+    _ensure_verified()  # fail fast (with a diagnostic table) before spawning
+
     workers = max_workers or min(len(_ENGINE_FUNCS), os.cpu_count() or 1)
     workers = max(1, workers)
 
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = [executor.submit(fn, img) for fn in _ENGINE_FUNCS]
-        results = [f.result() for f in futures]  # re-raises only real dispatch errors
+        results: list[list[dict]] = []
+        for name, f in zip(_ENGINE_NAMES, futures):
+            try:
+                results.append(f.result())
+            except Exception as exc:  # per-engine failure: log loudly, degrade to []
+                print(
+                    f"[ocr_consensus] engine '{name}' failed on this page "
+                    f"({type(exc).__name__}: {exc}); continuing with the other engines.",
+                    file=sys.stderr,
+                )
+                results.append([])
     return results
 
 

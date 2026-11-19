@@ -21,11 +21,19 @@ BUNDLE_TARGET="${WISPLUS_BUNDLE:-appimage}"   # appimage | deb | rpm
 
 step() { printf '\n\033[1;33m== %s ==\033[0m\n' "$*"; }
 
+# Clear, red failure banner; exits non-zero so a failed install never continues.
+fail() {
+  printf '\n\033[1;31m  X  SETUP FAILED\033[0m\n'
+  printf '     %s\n' "$*" >&2
+  exit 1
+}
+
 # --- 1. System packages ------------------------------------------------------
 step "Installing system packages (pacman)"
 sudo pacman -S --needed --noconfirm \
   base-devel python python-pip nodejs npm rust cargo \
-  webkit2gtk-4.1 libsoup3 libappindicator-gtk3
+  webkit2gtk-4.1 libsoup3 libappindicator-gtk3 \
+  || fail "pacman install failed (exit $?). Check that you are on an Arch/Manjaro system and can sudo."
 
 # --- 2. Python venv + lightweight backend -------------------------------------
 step "Creating .venv and installing backend requirements"
@@ -34,8 +42,10 @@ if [ ! -d .venv ]; then
 fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r backend/requirements.txt
+python -m pip install --upgrade pip \
+  || fail "pip self-upgrade failed (exit $?). Check your internet connection."
+pip install -r backend/requirements.txt \
+  || fail "pip install backend/requirements.txt failed (exit $?). See the pip output above for the offending package."
 
 # --- 3. Runtime data directories ----------------------------------------------
 step "Ensuring runtime directories (themes/, data/, pdfs/)"
@@ -44,10 +54,11 @@ mkdir -p themes data pdfs
 # --- 4. UI dependencies + release build ----------------------------------------
 step "Installing npm dependencies"
 cd ui
-npm install
+npm install || fail "npm install failed (exit $?). Check ui/package.json and your npm registry access."
 
 step "Building Tauri release bundle ($BUNDLE_TARGET)"
-npx tauri build --target "$BUNDLE_TARGET"
+npx tauri build --target "$BUNDLE_TARGET" \
+  || fail "npx tauri build failed (exit $?). See the Rust/Tauri output above; you may be missing a system dependency from step 1."
 
 # --- Summary -------------------------------------------------------------------
 printf '\n\033[1;32mWIS+ setup complete.\033[0m\n'

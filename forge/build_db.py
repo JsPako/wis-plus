@@ -74,7 +74,11 @@ from forge.pdf_normalizer import (  # noqa: E402
     preprocess_scan_for_ocr,
     render_normalized_page,
 )
-from forge.ocr_consensus import compute_consensus, run_ocr_engines  # noqa: E402
+from forge.ocr_consensus import (  # noqa: E402
+    compute_consensus,
+    run_ocr_engines,
+    verify_ocr_engines,
+)
 from forge.vlm_enricher import (  # noqa: E402
     VLMEnricher,
     match_step_bbox,
@@ -113,6 +117,90 @@ class RunStats:
 # ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Error diagnostics state + pre-flight checks
+# ---------------------------------------------------------------------------
+_SQL_TRACE: dict = {"sql": ""}
+
+
+def _sql_trace(sql: str) -> None:
+    """Record the most recent SQL statement (set as the connection trace callback)."""
+    _SQL_TRACE["sql"] = sql
+
+
+def _check_llama_server(llama_url: str, timeout_s: float = 5.0) -> None:
+    """Ping llama-server; exit(1) with remediation if it is unreachable."""
+    import httpx
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(llama_url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    endpoints = [f"{origin}/health", f"{origin}/v1/models"]
+    last_err = "no response"
+    for ep in endpoints:
+        try:
+            r = httpx.get(ep, timeout=timeout_s)
+            if r.status_code < 500:  # any non-5xx means the server is up
+                return
+            last_err = f"HTTP {r.status_code}"
+        except Exception as exc:  # noqa: BLE001 - report any failure mode
+            last_err = f"{type(exc).__name__}: {exc}"
+    print(
+        "[build_db] ERROR: cannot reach llama-server (VLM enrichment would fail).\n"
+        "            Endpoints tried:\n"
+        + "".join(f"              - {ep}\n" for ep in endpoints)
+        + f"            Last error: {last_err}\n"
+        "            Fix: start the vision server, e.g.\n"
+        "              llama-server -m <Qwen-VL-model> --port 8080\n"
+        "            (or pass --skip-vlm to build OCR-only data without VLM enrichment).",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _preflight(args: argparse.Namespace) -> None:
+    """Fail fast with actionable diagnostics before any heavy work starts.
+
+    Checks, in order: the PDF directory (exists + non-empty), shared/schema.sql
+    (exists + readable), llama-server reachability (unless --skip-vlm), and the
+    OCR engines (>=2 available, or 3 if --strict).  Any failure prints an exact,
+    human-readable remediation and exits with status 1 — nothing exits silently.
+    """
+    pdf_dir = Path(args.pdf_dir).resolve()
+    if not pdf_dir.is_dir():
+        print(f"[build_db] ERROR: --pdf-dir does not exist or is not a directory:\n"
+              f"            {pdf_dir}\n"
+              f"            Place the WIS/Haynes PDFs there (or pass --pdf-dir) and re-run.",
+              file=sys.stderr)
+        sys.exit(1)
+    if not list(pdf_dir.glob("*.pdf")):
+        print(f"[build_db] ERROR: no .pdf files found in:\n            {pdf_dir}\n"
+              f"            Copy the WIS/Haynes PDFs into that folder and re-run.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    if not SCHEMA_PATH.is_file():
+        print(f"[build_db] ERROR: database schema not found at:\n            {SCHEMA_PATH}\n"
+              f"            Restore shared/schema.sql (it defines the SQLite schema) and re-run.",
+              file=sys.stderr)
+        sys.exit(1)
+    try:
+        with open(SCHEMA_PATH, "r", encoding="utf-8-sig") as fh:
+            _ = fh.read()
+    except OSError as exc:
+        print(f"[build_db] ERROR: cannot read schema {SCHEMA_PATH}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if not getattr(args, "skip_vlm", False):
+        _check_llama_server(args.llama_url)
+
+    try:
+        verify_ocr_engines(strict=getattr(args, "strict", False))
+    except RuntimeError as exc:
+        print(f"\n[build_db] Aborting: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 def init_db(db_path: Path) -> sqlite3.Connection:
     """Create/overwrite the SQLite KB from shared/schema.sql.
 
@@ -124,6 +212,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    conn.set_trace_callback(_sql_trace)  # capture last SQL for error diagnostics
     conn.execute("PRAGMA foreign_keys = ON")
     with open(SCHEMA_PATH, "r", encoding="utf-8-sig") as f:
         conn.executescript(f.read())
@@ -414,10 +503,22 @@ async def process_pdf(
                 try:
                     eng = _ocr_page_pinned(pools_fns, gray)
                 except Exception as e:
-                    print(f"      [warn] OCR failed on page {i+1}: {e}", file=sys.stderr)
-                    eng = run_ocr_engines(gray)  # last-resort public API
+                    import traceback
+                    print(f"      [warn] OCR failed on {file_name} page {i+1}: "
+                          f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
+                          file=sys.stderr)
+                    eng = run_ocr_engines(gray)  # last-resort public API (raises if it also fails)
             else:
-                eng = run_ocr_engines(gray)
+                try:
+                    eng = run_ocr_engines(gray)
+                except Exception as e:
+                    import traceback
+                    print(f"      [error] OCR failed on {file_name} page {i+1}: "
+                          f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
+                          file=sys.stderr)
+                    raise RuntimeError(
+                        f"OCR failed for {file_name} (page {i + 1}): {type(e).__name__}: {e}"
+                    ) from e
             engine_results.append(eng)
             metas.append(meta)
             del img, gray
@@ -456,52 +557,64 @@ async def process_pdf(
             elif page_type == "diagram":
                 stats.diagrams += 1
 
-            tokens = consensus["tokens"]
-            page_id = upsert_page(
-                conn, doc_id, i + 1, meta["orientation"], meta["norm_width"],
-                meta["norm_height"], page_type, consensus["text"],
-            )
+            try:
+                tokens = consensus["tokens"]
+                page_id = upsert_page(
+                    conn, doc_id, i + 1, meta["orientation"], meta["norm_width"],
+                    meta["norm_height"], page_type, consensus["text"],
+                )
 
-            if page_type != "procedure":
-                continue
+                if page_type != "procedure":
+                    continue
 
-            # ---- build the structured procedure ------------------------------
-            removal = _steps_to_records(payload["removal_steps"], tokens)
-            installation = _steps_to_records(payload["installation_steps"], tokens)
-            tools = [
-                ToolItem(name=t["name"], size_or_code=t.get("size_or_code"),
-                         is_mercedes_special=t.get("is_mercedes_special", False))
-                for t in payload["tools_required"]
-            ]
-            search_text = _build_search_text(payload, synonyms)
-            rec = ProcedureRecord(
-                page_id=page_id,
-                category=payload.get("category"),
-                subcategory=payload.get("subcategory"),
-                title=payload.get("title"),
-                search_text=search_text,
-                engine_variants=payload["engine_variants"],
-                transmission_variants=payload["transmission_variants"],
-                tools_required=tools,
-                removal_steps=removal,
-                installation_steps=installation,
-                general_tips=payload["general_tips"],
-            )
-            proc_id = insert_procedure(conn, page_id, rec)
-            stats.procedures_extracted += 1
-            stats.steps_indexed += len(removal) + len(installation)
-            if search_text:
-                proc_ids_for_embed.append((proc_id, search_text))
+                # ---- build the structured procedure ------------------------------
+                removal = _steps_to_records(payload["removal_steps"], tokens)
+                installation = _steps_to_records(payload["installation_steps"], tokens)
+                tools = [
+                    ToolItem(name=t["name"], size_or_code=t.get("size_or_code"),
+                             is_mercedes_special=t.get("is_mercedes_special", False))
+                    for t in payload["tools_required"]
+                ]
+                search_text = _build_search_text(payload, synonyms)
+                rec = ProcedureRecord(
+                    page_id=page_id,
+                    category=payload.get("category"),
+                    subcategory=payload.get("subcategory"),
+                    title=payload.get("title"),
+                    search_text=search_text,
+                    engine_variants=payload["engine_variants"],
+                    transmission_variants=payload["transmission_variants"],
+                    tools_required=tools,
+                    removal_steps=removal,
+                    installation_steps=installation,
+                    general_tips=payload["general_tips"],
+                )
+                proc_id = insert_procedure(conn, page_id, rec)
+                stats.procedures_extracted += 1
+                stats.steps_indexed += len(removal) + len(installation)
+                if search_text:
+                    proc_ids_for_embed.append((proc_id, search_text))
 
-            for trow in _torque_rows(payload, tokens, proc_id, page_id):
-                insert_torque_spec(conn, proc_id, page_id, trow)
-                stats.torque_specs_indexed += 1
-                if not (trow.bbox_x0 <= 1e-9 and trow.bbox_y0 <= 1e-9
-                        and trow.bbox_x1 >= 1 - 1e-9 and trow.bbox_y1 >= 1 - 1e-9):
-                    stats.torque_bboxes_matched += 1
+                for trow in _torque_rows(payload, tokens, proc_id, page_id):
+                    insert_torque_spec(conn, proc_id, page_id, trow)
+                    stats.torque_specs_indexed += 1
+                    if not (trow.bbox_x0 <= 1e-9 and trow.bbox_y0 <= 1e-9
+                            and trow.bbox_x1 >= 1 - 1e-9 and trow.bbox_y1 >= 1 - 1e-9):
+                        stats.torque_bboxes_matched += 1
 
-            if payload.get("disputed_resolutions"):
-                stats.disputed_resolutions += len(payload["disputed_resolutions"])
+                if payload.get("disputed_resolutions"):
+                    stats.disputed_resolutions += len(payload["disputed_resolutions"])
+            except sqlite3.Error as exc:
+                conn.rollback()
+                stmt = (_SQL_TRACE.get("sql") or "<unknown>").strip().replace("\n", " ")
+                if len(stmt) > 120:
+                    stmt = stmt[:120] + "…"
+                detail = (f"SQLite {type(exc).__name__} writing {file_name} "
+                          f"(document_id={doc_id}, page_number={i + 1}): {exc}\n"
+                          f"    statement: {stmt}")
+                print(f"[error] {detail}\n        Rolled back this document's uncommitted "
+                      f"writes; database left consistent.", file=sys.stderr)
+                raise RuntimeError(detail) from exc
 
         conn.commit()   # document complete -> safe point (VLM cache also done)
 
@@ -559,16 +672,10 @@ def print_summary(stats: RunStats, db_path: Path, elapsed: float) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    pdf_dir = Path(args.pdf_dir)
+    _preflight(args)  # fails loudly (sys.exit(1)) on any missing dependency
+    pdf_dir = Path(args.pdf_dir).resolve()
     db_path = Path(args.db_path)
-    if not pdf_dir.is_dir():
-        print(f"error: --pdf-dir {pdf_dir} is not a directory", file=sys.stderr)
-        return 2
-
     pdfs = sorted(pdf_dir.glob("*.pdf"))
-    if not pdfs:
-        print(f"error: no *.pdf files found in {pdf_dir}", file=sys.stderr)
-        return 2
 
     t0 = time.time()
     conn = init_db(db_path)
@@ -628,6 +735,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                              "llama.cpp server (default: 1)")
     parser.add_argument("--max-pages", type=int, default=None,
                         help="cap pages per PDF (smoke-testing large Haynes books)")
+    parser.add_argument("--skip-vlm", action="store_true",
+                        help="Skip VLM enrichment (OCR-only build); also skips the "
+                             "llama-server reachability check.")
+    parser.add_argument("--strict", action="store_true",
+                        help="Require all 3 OCR engines (full consensus) instead of any 2 of 3.")
     args = parser.parse_args(argv)
     return run(args)
 

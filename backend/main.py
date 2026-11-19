@@ -110,7 +110,16 @@ def _engine() -> HybridSearchEngine:
 @app.get("/api/health")
 def health() -> dict:
     eng = _engine()
-    return {"status": "ok", "db_loaded": eng.db_loaded, "procedure_count": eng.procedure_count}
+    if not eng.db_loaded:
+        # Sidecar is up but has no searchable data — report it cleanly instead
+        # of crashing, so the UI can show a "build/copy the database" notice.
+        return {
+            "status": "degraded",
+            "db_loaded": False,
+            "procedure_count": 0,
+            "message": eng.db_error or "Knowledge base is not loaded.",
+        }
+    return {"status": "ok", "db_loaded": True, "procedure_count": eng.procedure_count}
 
 
 def _read_profile() -> UserConfig:
@@ -269,8 +278,17 @@ def _render_pdf_page(document_id: int, filename: str, page_number: int, dpi: int
     """Render one original page as a crisp PNG (pure function of its inputs,
     so the LRU key is exact; evicted pages re-render in ~50 ms)."""
     pdf_path = PDF_DIR / filename
+    if not PDF_DIR.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail=(f"pdfs/ directory is missing at {PDF_DIR} — expected the source "
+                    f"manual at {pdf_path}. Copy the original PDFs into {PDF_DIR} and retry."),
+        )
     if not pdf_path.exists():
-        raise HTTPException(status_code=404, detail=f"PDF file missing: {filename}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"PDF file not found at expected path: {pdf_path} (looked in {PDF_DIR}).",
+        )
     with pymupdf.open(pdf_path) as doc:
         if page_number < 1 or page_number > len(doc):
             raise HTTPException(
