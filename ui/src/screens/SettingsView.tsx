@@ -13,7 +13,15 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import type { TextStyle, ViewStyle } from 'react-native';
 
 import { api, ApiError } from '@/api/client';
 import {
@@ -394,7 +402,7 @@ export default function SettingsView({ onBack, profile, onProfileSaved }: Settin
                   {domInput({
                     type: 'color',
                     value: toSixDigit(draft.colors[key]),
-                    onChange: (e: React.FormEvent<HTMLInputElement>) => setColor(key, e.target.value.toUpperCase()),
+                    onChange: (e: React.FormEvent<HTMLInputElement>) => setColor(key, e.currentTarget.value.toUpperCase()),
                     style: { width: 34, height: 26, padding: 0, border: `1px solid ${colors.hairlineStrong}`, borderRadius: radius.sm, background: 'transparent', cursor: 'pointer' },
                   })}
                   <TextInput
@@ -451,7 +459,7 @@ export default function SettingsView({ onBack, profile, onProfileSaved }: Settin
 // ---------------------------------------------------------------------------
 // Styles (token-driven — the screen re-skins itself with the active theme)
 // ---------------------------------------------------------------------------
-const styles = {
+const styles = StyleSheet.create<Record<string, ViewStyle | TextStyle>>({
   root: { flex: 1, backgroundColor: colors.bgPrimary },
   content: { padding: spacing.xl, gap: spacing.lg },
 
@@ -503,4 +511,4 @@ const styles = {
   optionChipText: { ...typography.body, color: colors.textPrimary },
 
   status: { ...typography.caption, lineHeight: 17 },
-} satisfies Record<string, React.CSSProperties & object>;
+});

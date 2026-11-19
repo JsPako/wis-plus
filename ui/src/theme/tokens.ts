@@ -39,6 +39,10 @@ export const colors = {
   hairlineStrong: 'var(--wis-hairline-strong, rgba(240, 243, 246, 0.16))',
   scrim: 'var(--wis-scrim, rgba(9, 10, 12, 0.62))',
   amberDim: 'var(--wis-accent-dim, rgba(229, 169, 60, 0.14))',
+  /** Back-compat alias for pre-7.5 components — same var as hairline. */
+  borderHairline: 'var(--wis-hairline, rgba(240, 243, 246, 0.08))',
+  /** Back-compat alias for pre-7.5 components — same var as amberDim. */
+  accentDim: 'var(--wis-amber-dim, rgba(229, 169, 60, 0.16))',
   /** Shadow fill for elevated cards (Spotlight panel, modals). */
   shadow: 'var(--wis-shadow, rgba(0, 0, 0, 0.5))',
 } as const;
@@ -72,6 +76,9 @@ export const typography = {
   body: { fontSize: 15, fontWeight: '400' as const, lineHeight: 22 },
   rowLabel: { fontSize: 15, fontWeight: '600' as const },
   caption: { fontSize: 13, fontWeight: '400' as const, lineHeight: 18 },
+  title: { fontSize: 22, fontWeight: '700' as const, letterSpacing: 0.3 },
+  heading: { fontSize: 16, fontWeight: '700' as const, letterSpacing: 0.2 },
+  monoStack: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
 } as const;
 
 /** Motion constants — single source of truth for durations & spring physics. */
