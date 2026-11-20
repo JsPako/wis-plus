@@ -47,3 +47,12 @@ Line numbers refer to the files on `wip/prior-audit` (commit 833d1b9), i.e. `git
 
 Summary: of the 13 sub-items, **2 fully fixed** (1.5a, 1.5b), **4 partly** (3.4, 3.5b, 3.11a, 3.11c), **7 absent** (3.5a, 3.11b, 3.11d, 3.11e, 3.12, 6.5). The WIP's real contributions are the normalisation API (`normalize_tokens`/`normalize_consensus`, `_token_box`, `_as_token` tuple handling), dispute-threshold retune (DISPUTE_* constants) and worker-pool reuse in build_db — not the reading-order, boilerplate-floor, dataclass or clustering work. Still broken in WIP per pyflakes: undefined `np` at build_db.py:424/449/514.
 
+
+## Phase 1 — Release blockers
+
+| Task | Status | Commit | Notes |
+|------|--------|--------|-------|
+| 1.1 forge/build_db.py INSERT placeholder count | done | 16dc12f | INSERT had 15 columns but only 14 placeholders (sqlite3.ProgrammingError at runtime). Added missing ?. |
+| 1.5 _step_words(rec) → step lists | done | 16dc12f | Three call sites passed ProcedureRecord to _step_words instead of its step lists. Fixed to rec.removal_steps + rec.installation_steps. |
+| 1.6 Tauri sidecar lifecycle | done | 2e66bb7 | Replaced system-python spawn with tauri-plugin-shell external binary. Health-check before spawn, log file in app data dir, WISPLUS_DATA_DIR env var, port-in-use message, kill-on-exit. build_sidecar.sh/.ps1 added. UI: first-run screen + Settings 'Open Data Folder' button. |
+| 1.7 setup_arch.sh --target → --bundles | done | 0c0058f | BUNDLE_TARGET holds appimage/deb/rpm (bundle formats) but was passed to --target (expects Rust triple). Changed to --bundles. |
