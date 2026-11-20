@@ -76,12 +76,16 @@ from shared.models import NormalizedBBox  # noqa: E402
 # ---------------------------------------------------------------------------
 ALLOWED_PAGE_TYPES = {"procedure", "spec_table", "diagram", "boilerplate_skip"}
 
-ALLOWED_ENGINE_VARIANTS = {
-    "M102_1.8", "M102_2.0", "M102_2.3", "M102_16V", "M103_2.6", "OM601_602",
-}
-ALLOWED_TRANSMISSION_VARIANTS = {
-    "AUTO_722.4", "MANUAL_716.2", "MANUAL_717.4",
-}
+# Sourced from shared/variants.json — the single source of truth (task 2.1/2.2).
+# _REPO_ROOT is already on sys.path (see above), so this import always resolves.
+from shared.variants import engine_ids as _engine_ids, gearbox_ids as _gearbox_ids  # noqa: E402
+import logging  # noqa: E402
+
+log = logging.getLogger("wisplus.forge")
+
+ALLOWED_ENGINE_VARIANTS: frozenset[str] = _engine_ids()
+ALLOWED_TRANSMISSION_VARIANTS: frozenset[str] = _gearbox_ids()
+# ALL_TAG is no longer stored in the DB (task 2.2); kept only for legacy reads.
 ALL_TAG = "ALL"
 
 STEP_MODES = {"removal", "installation", "general"}
@@ -504,11 +508,34 @@ def _clean_tools(raw_tools) -> list[dict]:
     return tools
 
 
-def _clean_variants(raw, allowed: set) -> list[str]:
+def _clean_variants(raw, allowed: frozenset) -> tuple[list[str], list[str]]:
+    """Return (clean_variant_list, review_flags).
+
+    * Recognised tokens (in ``allowed``) are kept.
+    * Unrecognised non-empty tokens are flagged as ``unknown_variant:<tag>``
+      and **not** stored in the variant list.
+    * The legacy ``ALL`` token is silently dropped (absence means "all").
+    * If nothing survives, the list is ``[]`` (never ``["ALL"]``) and a
+      ``variant_unspecified`` flag is emitted so downstream can surface it.
+    """
+    flags: list[str] = []
     if not isinstance(raw, list):
         raw = [raw] if raw else []
-    out = [str(v).strip() for v in raw if str(v).strip() in allowed]
-    return out or [ALL_TAG]
+    out: list[str] = []
+    for v in raw:
+        t = str(v).strip()
+        if not t or t == ALL_TAG:
+            continue
+        if t in allowed:
+            if t not in out:
+                out.append(t)
+        else:
+            flag = f"unknown_variant:{t}"
+            log.warning("variant %r not in locked vocabulary -> flagged", t)
+            flags.append(flag)
+    if not out:
+        flags.append("variant_unspecified")
+    return out, flags
 
 
 def normalize_vlm_payload(raw: dict) -> dict:
@@ -539,14 +566,18 @@ def normalize_vlm_payload(raw: dict) -> dict:
     tips = [str(t).strip() for t in (raw.get("general_tips") or [])
             if str(t).strip()] if isinstance(raw.get("general_tips"), list) else []
 
+    eng_variants, eng_flags = _clean_variants(raw.get("engine_variants"), ALLOWED_ENGINE_VARIANTS)
+    trans_variants, trans_flags = _clean_variants(raw.get("transmission_variants"), ALLOWED_TRANSMISSION_VARIANTS)
+
     return {
         "page_type": page_type,
         "skip_reason": raw.get("skip_reason") if page_type == "boilerplate_skip" else None,
         "category": (str(raw["category"]).strip() if raw.get("category") else None),
         "subcategory": (str(raw["subcategory"]).strip() if raw.get("subcategory") else None),
         "title": (str(raw["title"]).strip() if raw.get("title") else None),
-        "engine_variants": _clean_variants(raw.get("engine_variants"), ALLOWED_ENGINE_VARIANTS),
-        "transmission_variants": _clean_variants(raw.get("transmission_variants"), ALLOWED_TRANSMISSION_VARIANTS),
+        "engine_variants": eng_variants,
+        "transmission_variants": trans_variants,
+        "review_flags": eng_flags + trans_flags,
         "tools_required": _clean_tools(raw.get("tools_required")),
         "removal_steps": _clean_steps(raw.get("removal_steps")),
         "installation_steps": _clean_steps(raw.get("installation_steps")),

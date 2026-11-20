@@ -303,15 +303,16 @@ def insert_procedure(
     cur = conn.execute(
         "INSERT INTO procedures (page_id, category, subcategory, title, search_text,"
         " engine_variants, transmission_variants, tools_required, removal_steps,"
-        " installation_steps, general_tips, embedding_dim, ocr_confidence,"
-        " is_duplicate, duplicate_of)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " installation_steps, general_tips, review_flags, stages, embedding_dim,"
+        " ocr_confidence, is_duplicate, duplicate_of)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (page_id, rec.category, rec.subcategory, rec.title, rec.search_text,
          dump_json(rec.engine_variants), dump_json(rec.transmission_variants),
          dump_json([t.model_dump() for t in rec.tools_required]),
          dump_json([s.model_dump() for s in rec.removal_steps]),
          dump_json([s.model_dump() for s in rec.installation_steps]),
-         dump_json(rec.general_tips), None, ocr_confidence, is_duplicate, duplicate_of),
+         dump_json(rec.general_tips), dump_json(rec.review_flags), dump_json(rec.stages),
+         None, ocr_confidence, is_duplicate, duplicate_of),
     )
     return int(cur.lastrowid)
 
@@ -330,13 +331,14 @@ def update_procedure_content(
         "UPDATE procedures SET page_id = ?, category = ?, subcategory = ?, title = ?,"
         " search_text = ?, engine_variants = ?, transmission_variants = ?,"
         " tools_required = ?, removal_steps = ?, installation_steps = ?,"
-        " general_tips = ?, ocr_confidence = ? WHERE id = ?",
+        " general_tips = ?, review_flags = ?, stages = ?, ocr_confidence = ? WHERE id = ?",
         (page_id, rec.category, rec.subcategory, rec.title, rec.search_text,
          dump_json(rec.engine_variants), dump_json(rec.transmission_variants),
          dump_json([t.model_dump() for t in rec.tools_required]),
          dump_json([s.model_dump() for s in rec.removal_steps]),
          dump_json([s.model_dump() for s in rec.installation_steps]),
-         dump_json(rec.general_tips), ocr_confidence, procedure_id),
+         dump_json(rec.general_tips), dump_json(rec.review_flags), dump_json(rec.stages),
+         ocr_confidence, procedure_id),
     )
 
 
@@ -926,6 +928,7 @@ async def process_pdf(
                     search_text=search_text,
                     engine_variants=payload["engine_variants"],
                     transmission_variants=payload["transmission_variants"],
+                    review_flags=payload.get("review_flags", []),   # v3 (task 2.2)
                     tools_required=tools,
                     removal_steps=removal,
                     installation_steps=installation,
