@@ -72,7 +72,22 @@ function stepMentionsComponent(stepText: string, componentName: string): boolean
 }
 
 function specLabel(spec: TorqueSpec): string {
-  return spec.value_ftlb != null ? `${spec.value_nm} Nm · ${spec.value_ftlb} ft·lb` : `${spec.value_nm} Nm`;
+  // v3: value_nm is nullable — when absent, show the printed text VERBATIM
+  // (never paraphrase a value we did not confidently extract).
+  if (spec.value_nm == null) return spec.raw_text;
+  const base = `${spec.value_nm} Nm`;
+  return spec.value_ftlb != null ? `${base} · ${spec.value_ftlb} ft·lb` : base;
+}
+
+/** Defensive label for a staged-tightening object (v3 `stages` column). */
+function stageLabel(s: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (typeof s.stage === 'number') parts.push(`Stage ${s.stage}`);
+  if (typeof s.value_nm === 'number') parts.push(`${s.value_nm} Nm`);
+  if (typeof s.angle_deg === 'number') parts.push(`${s.angle_deg}°`);
+  const text = typeof s.text === 'string' ? s.text : '';
+  if (text) parts.push(text);
+  return parts.length > 0 ? parts.join(' · ') : JSON.stringify(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +274,13 @@ export default function ProcedureView({ id }: { id: number }) {
               <Text style={styles.crumb}>
                 {detail.category} › {detail.subcategory} · {detail.page.source_type} p. {detail.page.page_number}
               </Text>
+              {/* v3 (task 2.4): review flags — never claim a value is verified */}
+              {(detail.review_flags ?? []).length > 0 ? (
+                <View style={styles.flagBadge}>
+                  <Text style={styles.flagTitle}>⚠ Check carefully</Text>
+                  <Text numberOfLines={2} style={styles.flagText}>{detail.review_flags.join(' · ')}</Text>
+                </View>
+              ) : null}
               <View style={styles.toolbarRow}>
                 <View style={styles.tabGroup}>
                   {(
@@ -360,6 +382,18 @@ export default function ProcedureView({ id }: { id: number }) {
                 </>
               ) : null}
 
+              {/* v3 (task 2.4): staged tightening, if the procedure has stages */}
+              {(detail.stages ?? []).length > 0 ? (
+                <View style={styles.card}>
+                  <Text style={styles.sectionLabel}>Staged Tightening — follow the printed sequence</Text>
+                  {(detail.stages ?? []).map((st, i) => (
+                    <View key={`${i}-${JSON.stringify(st)}`} style={styles.stageRow}>
+                      <Text style={styles.stageText}>{stageLabel(st)}</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+
               {/* All Torque & Specs tab -------------------------------------- */}
               {mode === 'torque' ? (
                 <View style={styles.card}>
@@ -374,6 +408,8 @@ export default function ProcedureView({ id }: { id: number }) {
                           <Text style={styles.specMeta}>
                             {spec.step_mode === 'general' ? 'General' : spec.step_mode === 'installation' ? 'Installation' : 'Removal'} · scan p. {spec.page_id}
                           </Text>
+                          {/* v3: printed text verbatim — the only thing the user must match by eye */}
+                          <Text style={styles.rawText}>“{spec.raw_text}”</Text>
                         </View>
                         <TorquePill spec={spec} onVerify={verifySpec} />
                       </View>
@@ -443,6 +479,31 @@ const styles = {
   tabActive: { backgroundColor: colors.accentAmber },
   tabText: { fontSize: 13, fontWeight: '700' as const, color: colors.textSecondary },
   tabTextActive: { color: colors.textOnAmber },
+  // v3 (task 2.4): review-flag badge + raw/stage text -------------------------
+  flagBadge: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: spacing.sm,
+    backgroundColor: colors.accentAmber,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    marginBottom: spacing.md,
+  },
+  flagTitle: { fontSize: 12, fontWeight: '800' as const, color: colors.textOnAmber },
+  flagText: { ...typography.caption, color: colors.textOnAmber, flexShrink: 1 as const },
+  rawText: { ...typography.caption, fontStyle: 'italic' as const, color: colors.textPrimary, marginTop: 2 },
+  stageRow: {
+    backgroundColor: colors.bgElevated,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.hairlineStrong,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    marginBottom: spacing.xs + 2,
+  },
+  stageText: { fontSize: 13, fontWeight: '600' as const, color: colors.textPrimary },
+
   tipsBtn: {
     marginLeft: 'auto' as const,
     paddingHorizontal: spacing.md,

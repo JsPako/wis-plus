@@ -14,7 +14,8 @@
  *     to that exact page, smoothly scrolls so the target normalized
  *     `[x0, y0, x1, y1]` bounding box is centered in the viewport and draws
  *     an animated pulsing amber highlight over the exact printed text,
- *   • A verify-green "Verified on scan" chip while a highlight is active,
+ *   • A "Check by eye" chip while a highlight is active (we never claim a
+ *     value is verified — the user confirms it against the scan themselves),
  *   • High-contrast **Scan Boost** toggle (`◐`) — requests the backend's
  *     enhanced PNG (faded-digit / exploded-diagram boost, Task 10) without
  *     touching page, zoom, scroll position or the active bbox highlight.
