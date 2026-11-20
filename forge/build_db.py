@@ -305,7 +305,7 @@ def insert_procedure(
         " engine_variants, transmission_variants, tools_required, removal_steps,"
         " installation_steps, general_tips, embedding_dim, ocr_confidence,"
         " is_duplicate, duplicate_of)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (page_id, rec.category, rec.subcategory, rec.title, rec.search_text,
          dump_json(rec.engine_variants), dump_json(rec.transmission_variants),
          dump_json([t.model_dump() for t in rec.tools_required]),
@@ -632,7 +632,7 @@ def _procedure_entry(proc_id: int, source_type: str, doc_code: str, rec: Procedu
         "doc_code": doc_code,
         "norm_title": _norm_title(rec.title),
         "engines": {str(e).strip().upper() for e in rec.engine_variants},
-        "step_words": _step_words(rec),
+        "step_words": _step_words(rec.removal_steps + rec.installation_steps),
         "confidence": confidence,
         "torque_count": torque_count,
         "is_dup": is_dup,
@@ -716,7 +716,7 @@ class ProcedureDedupIndex:
         entry.update({
             "norm_title": new_norm,
             "engines": {str(e).strip().upper() for e in rec.engine_variants},
-            "step_words": _step_words(rec),
+            "step_words": _step_words(rec.removal_steps + rec.installation_steps),
             "confidence": confidence,
             "torque_count": torque_count,
         })
@@ -938,7 +938,7 @@ async def process_pdf(
                     doc_code=doc_code,
                     norm_title=_norm_title(rec.title),
                     engines=rec.engine_variants,
-                    step_words=_step_words(rec),
+                    step_words=_step_words(rec.removal_steps + rec.installation_steps),
                 )
                 suppressed = False
                 if existing is None:
