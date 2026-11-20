@@ -132,7 +132,12 @@ def health() -> dict:
             "procedure_count": 0,
             "message": eng.db_error or "Knowledge base is not loaded.",
         }
-    return {"status": "ok", "db_loaded": True, "procedure_count": eng.procedure_count}
+    return {
+        "status": "ok",
+        "db_loaded": True,
+        "procedure_count": eng.procedure_count,
+        "schema_version": eng.schema_version,  # v3
+    }
 
 
 def _read_profile() -> UserConfig:
@@ -277,6 +282,8 @@ def procedure_detail(procedure_id: int) -> dict:
         "subcategory": row["subcategory"],
         "engine_variants": load_json(row["engine_variants"]),
         "transmission_variants": load_json(row["transmission_variants"]),
+        "review_flags": load_json(row.get("review_flags", "[]")),   # v3
+        "stages": load_json(row.get("stages", "[]")),               # v3
         "tools_required": load_json(row["tools_required"]),
         "removal_steps": load_json(row["removal_steps"]),
         "installation_steps": load_json(row["installation_steps"]),

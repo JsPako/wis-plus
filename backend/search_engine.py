@@ -106,6 +106,7 @@ class HybridSearchEngine:
         #: True once _open_db confirms procedures.is_duplicate exists (schema v2+);
         #: secondary duplicate copies are then hidden from every result path.
         self._has_dup_flag = False
+        self.schema_version: int = 1  # v3: read from meta table on open
         self.families = load_synonym_families()
 
         #: Alias chips from the most recent :meth:`search` call (UI "Also matching").
@@ -143,6 +144,13 @@ class HybridSearchEngine:
         conn.row_factory = sqlite3.Row
         self._conn = conn
         self.db_loaded = True
+
+        # v3: read schema version from meta table (forward-compatible).
+        try:
+            sv_row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+            self.schema_version = int(sv_row["value"]) if sv_row else 1
+        except Exception:
+            self.schema_version = 1
 
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(procedures)")}
         self._has_dup_flag = "is_duplicate" in cols

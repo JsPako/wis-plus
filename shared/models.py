@@ -117,10 +117,12 @@ class TorqueSpec(BaseModel):
     page_id: int
     step_mode: StepMode
     component_name: str = Field(..., min_length=1)
-    value_nm: float = Field(..., gt=0.0)
+    value_nm: Optional[float] = Field(default=None, gt=2.0, le=400.0)  # v3: nullable
     value_ftlb: Optional[float] = Field(default=None, gt=0.0)
     raw_text: str = Field(..., min_length=1)
     bbox: NormalizedBBox
+    bbox_exact: bool = True   # v3: False = approximate/estimated box
+    angle_deg: Optional[float] = None  # v3: rotation in degrees
 
 
 class TorqueSpecRow(BaseModel):
@@ -132,13 +134,15 @@ class TorqueSpecRow(BaseModel):
     page_id: int
     step_mode: StepMode
     component_name: str
-    value_nm: float
+    value_nm: Optional[float] = None  # v3: nullable
     value_ftlb: Optional[float] = None
     raw_text: str
     bbox_x0: float
     bbox_y0: float
     bbox_x1: float
     bbox_y1: float
+    bbox_exact: bool = True   # v3
+    angle_deg: Optional[float] = None  # v3
 
     def to_nested(self) -> TorqueSpec:
         return TorqueSpec(
@@ -153,6 +157,8 @@ class TorqueSpecRow(BaseModel):
             bbox=NormalizedBBox(
                 x0=self.bbox_x0, y0=self.bbox_y0, x1=self.bbox_x1, y1=self.bbox_y1
             ),
+            bbox_exact=self.bbox_exact,
+            angle_deg=self.angle_deg,
         )
 
 
@@ -167,6 +173,8 @@ class ProcedureRecord(BaseModel):
     title: str = Field(..., min_length=1)
     engine_variants: list[str] = Field(default_factory=list)
     transmission_variants: list[str] = Field(default_factory=list)
+    review_flags: list[str] = Field(default_factory=list)   # v3
+    stages: list[dict] = Field(default_factory=list)        # v3
     tools_required: list[ToolItem] = Field(default_factory=list)
     removal_steps: list[ProcedureStep] = Field(default_factory=list)
     installation_steps: list[ProcedureStep] = Field(default_factory=list)
@@ -174,7 +182,7 @@ class ProcedureRecord(BaseModel):
     search_text: str = ""  # denormalized FTS surface (steps+tools+tips+synonyms)
     embedding: Optional[list[float]] = None
 
-    @field_validator("engine_variants", "transmission_variants", mode="before")
+    @field_validator("engine_variants", "transmission_variants", "review_flags", "stages", mode="before")
     @classmethod
     def _coerce_json_str(cls, v):
         """Allow the raw JSON-array-string form coming straight out of SQLite."""

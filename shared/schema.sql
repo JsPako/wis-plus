@@ -19,7 +19,9 @@ CREATE TABLE documents (
     wis_subsection  TEXT    NULL,                     -- nullable, e.g. '03' (suspension)
     page_count      INTEGER NOT NULL CHECK (page_count >= 0),
     ingested_at     TEXT    NOT NULL DEFAULT (datetime('now')),
-    checksum_sha256 TEXT    NULL                      -- content hash for re-ingest detection
+    checksum_sha256 TEXT    NULL,                     -- content hash for re-ingest detection
+    region          TEXT    NULL,                     -- v3: geographic/edition tag, e.g. 'EU', 'US'
+    rel_path        TEXT    NULL                      -- v3: path relative to pdfs/ root
 );
 CREATE INDEX idx_documents_source ON documents(source_type, wis_section, wis_subsection);
 CREATE INDEX idx_documents_checksum ON documents(checksum_sha256);
@@ -56,6 +58,8 @@ CREATE TABLE procedures (
     title                   TEXT    NOT NULL,         -- e.g. 'Replace front shock absorbers'
     engine_variants         TEXT    NOT NULL DEFAULT '[]',   -- JSON array: ["M102_1.8","M102_2.0"]
     transmission_variants   TEXT    NOT NULL DEFAULT '[]',   -- JSON array: ["AUTO_722.4","MANUAL_717.4"]
+    review_flags            TEXT    NOT NULL DEFAULT '[]',   -- v3: JSON array of warning strings
+    stages                  TEXT    NOT NULL DEFAULT '[]',   -- v3: JSON array of stage objects
     tools_required          TEXT    NOT NULL DEFAULT '[]',   -- JSON array of ToolItem
     removal_steps           TEXT    NOT NULL DEFAULT '[]',   -- JSON array of ProcedureStep
     installation_steps      TEXT    NOT NULL DEFAULT '[]',   -- JSON array of ProcedureStep
@@ -85,13 +89,16 @@ CREATE TABLE torque_specs (
     page_id          INTEGER NOT NULL REFERENCES pages(id)      ON DELETE CASCADE,
     step_mode        TEXT    NOT NULL CHECK (step_mode IN ('removal', 'installation', 'general')),
     component_name   TEXT    NOT NULL,                -- e.g. 'Wheel hub nut'
-    value_nm         REAL    NOT NULL,                -- Newton-metres
+    value_nm         REAL    NULL CHECK (value_nm IS NULL OR (value_nm >= 2.0 AND value_nm <= 400.0)),  -- v3: nullable
     value_ftlb       REAL    NULL,                    -- ft-lb (nullable)
     raw_text         TEXT    NOT NULL,                -- verbatim source text, e.g. '45 Nm (33 ft-lb)'
     bbox_x0          REAL    NOT NULL DEFAULT 0.0 CHECK (bbox_x0 >= 0.0 AND bbox_x0 <= 1.0),
     bbox_y0          REAL    NOT NULL DEFAULT 0.0 CHECK (bbox_y0 >= 0.0 AND bbox_y0 <= 1.0),
     bbox_x1          REAL    NOT NULL DEFAULT 1.0 CHECK (bbox_x1 >= 0.0 AND bbox_x1 <= 1.0),
-    bbox_y1          REAL    NOT NULL DEFAULT 1.0 CHECK (bbox_y1 >= 0.0 AND bbox_y1 <= 1.0)
+    bbox_y1          REAL    NOT NULL DEFAULT 1.0 CHECK (bbox_y1 >= 0.0 AND bbox_y1 <= 1.0),
+    bbox_exact       INTEGER NOT NULL DEFAULT 1 CHECK (bbox_exact IN (0,1)),  -- v3: 0 = approximate/estimated box
+    angle_deg        REAL    NULL,                    -- v3: rotation of the text line in degrees (for rotated scans)
+    CHECK (bbox_x0 < bbox_x1 AND bbox_y0 < bbox_y1)   -- v3: enforce ordering at DB level
 );
 CREATE INDEX idx_torque_procedure ON torque_specs(procedure_id, step_mode);
 CREATE INDEX idx_torque_page      ON torque_specs(page_id);
@@ -141,6 +148,8 @@ CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
--- v2: procedures.ocr_confidence / is_duplicate / duplicate_of + documents checksum index
---      (procedure-level deduplication; see forge/build_db.py).
-INSERT INTO meta(key, value) VALUES ('schema_version', '2');
+-- v3: review_flags / stages on procedures, nullable value_nm + bbox_exact + angle_deg
+--      on torque_specs, documents.region / rel_path.
+INSERT INTO meta(key, value) VALUES ('schema_version', '3');
+INSERT INTO meta(key, value) VALUES ('created_at', datetime('now'));
+INSERT INTO meta(key, value) VALUES ('source_pdf_count', '0');

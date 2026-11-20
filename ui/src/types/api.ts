@@ -10,6 +10,7 @@ export interface HealthResponse {
   status: 'ok';
   db_loaded: boolean;
   procedure_count: number;
+  schema_version?: number;  // v3: reported by backend when DB is loaded
 }
 
 // ---------------------------------------------------------------------------
@@ -168,10 +169,12 @@ export interface TorqueSpec {
   page_id: number;
   step_mode: StepMode;
   component_name: string;
-  value_nm: number;
+  value_nm: number | null;            // v3: nullable (CHECK enforces range when present)
   value_ftlb: number | null;
   raw_text: string;
   bbox: NormalizedBBox;                // exact spot on the scan to verify by eye
+  bbox_exact: boolean;                 // v3: false = approximate/estimated box
+  angle_deg: number | null;            // v3: rotation in degrees (rotated scans)
 }
 
 export interface SourcePageRef {
@@ -189,6 +192,8 @@ export interface ProcedureDetail {
   subcategory: string;
   engine_variants: string[];
   transmission_variants: string[];
+  review_flags: string[];              // v3: warning strings (unknown_variant:X, variant_unspecified, …)
+  stages: Record<string, unknown>[];   // v3: multi-stage procedure objects
   tools_required: ToolItem[];
   removal_steps: ProcedureStep[];
   installation_steps: ProcedureStep[];

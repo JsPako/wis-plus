@@ -326,11 +326,11 @@ export default function PdfVerifyPane({
         </Pressable>
       </View>
 
-      {/* Verified chip ---------------------------------------------------- */}
+      {/* Check-by-eye chip (task 2.4: never say "verified") ------------------ */}
       {highlight && highlight.page === page ? (
         <View style={styles.verifyChip}>
           <View style={styles.verifyDot} />
-          <Text style={styles.verifyText}>Verified on scan · p. {highlight.page}</Text>
+          <Text style={styles.verifyText}>Check by eye · p. {highlight.page}</Text>
         </View>
       ) : null}
 
