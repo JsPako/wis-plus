@@ -56,6 +56,8 @@ data/cache/
 # Raw manual scans (large, proprietary PDFs — never commit)
 # ---------------------------------------------------------------------------
 pdfs/*.pdf
+pdfs/EU/
+pdfs/US/
 
 # ---------------------------------------------------------------------------
 # Local user configuration & machine-specific state
@@ -74,6 +76,20 @@ user_config.json
 # Keep the folder local — never commit exes/DLLs.
 # ---------------------------------------------------------------------------
 tools/
+
+# ---------------------------------------------------------------------------
+# Local scratch from audit/baseline sessions (never commit)
+# scripts/preview_ocr.py and forge/tests_smoke_01001.py are deliberately NOT
+# ignored here — they stay untracked pending an explicit decision.
+# ---------------------------------------------------------------------------
+_tmp_*
+_smoke_*
+_run_*.py
+_u.txt
+_audit*
+_baseline*
+_phase0_*
+npm-cache/
 
 # ---------------------------------------------------------------------------
 # OS / editor noise
