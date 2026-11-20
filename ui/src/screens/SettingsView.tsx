@@ -451,6 +451,28 @@ export default function SettingsView({ onBack, profile, onProfileSaved }: Settin
             Current: {optionLabel(ENGINE_OPTIONS, profile?.engine)} · {optionLabel(TRANSMISSION_OPTIONS, profile?.transmission)}
           </Text>
         </View>
+
+        {/* Section 3 — Data Folder ------------------------------------------ */}
+        <SectionTitle>Data Folder</SectionTitle>
+        <View style={styles.panel}>
+          <Text style={styles.panelHint}>
+            The database, themes, user config and PDFs live in the WIS+ data folder.
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              // Tauri: open the app data directory in the platform file manager.
+              if (window.__TAURI__) {
+                window.__TAURI__.shell.open(
+                  (window as any).__WISPLUS_DATA_DIR__ || '',
+                );
+              }
+            }}
+            style={({ pressed }) => [styles.saveBtn, pressed && { opacity: 0.75 }]}
+          >
+            <Text style={styles.saveBtnText}>📂 Open Data Folder</Text>
+          </Pressable>
+        </View>
       </ScrollView>
     </View>
   );

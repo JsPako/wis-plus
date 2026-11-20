@@ -275,6 +275,33 @@ function AppShell() {
     return <SplashScreen onComplete={() => setSplashDone(true)} />;
   }
 
+  // First-run: backend is up but no database has been loaded yet.
+  if (health && !health.db_loaded) {
+    return (
+      <View style={styles.root}>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 }}>
+          <Text style={{ fontSize: 48, marginBottom: 16 }}>🔧</Text>
+          <Text style={{ ...typography.title, textAlign: 'center' }}>Welcome to WIS+</Text>
+          <Text style={{ ...typography.body, color: colors.textSecondary, marginTop: 12, textAlign: 'center', maxWidth: 480 }}>
+            No workshop database has been loaded yet. Copy your W201 knowledge-base
+            SQLite file (e.g. w201_kb.sqlite) into the WIS+ data folder, then restart
+            the app or press Reload.
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => { void refreshHealth(); }}
+            style={({ pressed }) => [
+              { marginTop: 24, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.accentPrimary },
+              pressed && { opacity: 0.75 },
+            ]}
+          >
+            <Text style={{ color: '#fff', fontWeight: '600' }}>⟳ Check Again</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
   const showBack = view !== 'directory';
 
   return (
