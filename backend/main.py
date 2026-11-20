@@ -22,7 +22,6 @@ import json
 import logging
 import os
 import sys
-import threading
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path

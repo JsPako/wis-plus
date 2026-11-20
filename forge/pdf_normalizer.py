@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from typing import Optional
-
 import cv2
 import numpy as np
 

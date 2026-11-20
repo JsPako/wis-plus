@@ -387,7 +387,7 @@ def match_step_bbox(step_text: str, ocr_tokens: list[dict]) -> Optional[Normaliz
 # ---------------------------------------------------------------------------
 # Prompt construction (structured JSON schema, locked domain rules)
 # ---------------------------------------------------------------------------
-_SYSTEM_PROMPT = f"""You are the structuring engine of WIS+, a local knowledge base for the Mercedes-Benz 190E (W201, 1983-1993) workshop manuals: WIS+ chapter PDFs and Haynes scans.
+_SYSTEM_PROMPT = """You are the structuring engine of WIS+, a local knowledge base for the Mercedes-Benz 190E (W201, 1983-1993) workshop manuals: WIS+ chapter PDFs and Haynes scans.
 
 You receive ONE scanned page as an image, plus consensus OCR text from three engines and a JSON list of disputed regions where those engines disagreed. The IMAGE is ground truth; the OCR text is only for orientation. For every disputed region, read the correct value directly off the image.
 

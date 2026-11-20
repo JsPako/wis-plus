@@ -22,7 +22,6 @@ tokens ``{text, x0, y0, x1, y1, confidence}``.
 from __future__ import annotations
 
 import json
-import math
 import os
 import sys
 import re
@@ -68,7 +67,6 @@ def _union(a: list[float], b: list[float]) -> list[float]:
 
 
 def _norm_text(text: str) -> str:
-    import re
     return re.sub(r"\s+", " ", (text or "")).strip().casefold()
 
 
@@ -657,10 +655,6 @@ def run_ocr_engines(
 # ---------------------------------------------------------------------------
 # Stage 2: disagreement detection (RapidOCR vs Tesseract)
 # ---------------------------------------------------------------------------
-def _has_digit(text: str) -> bool:
-    return any(ch.isdigit() for ch in text)
-
-
 def detect_disputed_page(
     rapid_tokens: list[dict],
     tesseract_tokens: list[dict],

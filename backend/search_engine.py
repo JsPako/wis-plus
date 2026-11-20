@@ -31,7 +31,10 @@ import sqlite3
 import sys
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from shared.models import SearchResultItem
 
 import numpy as np
 

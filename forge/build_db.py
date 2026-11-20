@@ -52,6 +52,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+
 # ---------------------------------------------------------------------------
 # Repo-root imports: `shared` and `forge` are sibling namespace packages.
 # ---------------------------------------------------------------------------
@@ -86,7 +88,6 @@ from forge.ocr_consensus import (  # noqa: E402
     prewarm_easyocr_weights,
     run_easyocr_engine,
     run_fast_ocr_engines,
-    run_ocr_engines,
     silence_easyocr_torch_warnings,
     verify_ocr_engines,
 )
