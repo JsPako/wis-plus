@@ -57,7 +57,7 @@ cd ui
 npm install || fail "npm install failed (exit $?). Check ui/package.json and your npm registry access."
 
 step "Building Tauri release bundle ($BUNDLE_TARGET)"
-npx tauri build --target "$BUNDLE_TARGET" \
+npx tauri build --bundles "$BUNDLE_TARGET" \
   || fail "npx tauri build failed (exit $?). See the Rust/Tauri output above; you may be missing a system dependency from step 1."
 
 # --- Summary -------------------------------------------------------------------
