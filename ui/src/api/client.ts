@@ -8,6 +8,7 @@ import type {
   CustomThemeJson,
   DirectoryCategory,
   HealthResponse,
+  ProfileOption,
   ProcedureDetail,
   SaveProfilePayload,
   SearchResponse,
@@ -60,6 +61,10 @@ function withParams(base: string, params: Record<string, string | number | undef
 export const api = {
   /** GET /api/health — used by the splash screen to know when to fade out. */
   health: () => request<HealthResponse>('/api/health'),
+
+  /** GET /api/variants — canonical engine/gearbox vocabulary (single source of truth). */
+  getVariants: () =>
+    request<{ engines: ProfileOption[]; gearboxes: ProfileOption[] }>('/api/variants'),
 
   /** GET /api/profile — current build preferences (defaults: everything 'ALL'). */
   getProfile: () => request<VehicleProfile>('/api/profile'),

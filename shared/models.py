@@ -208,7 +208,7 @@ class VehicleProfile(BaseModel):
     model: str = "Mercedes-Benz 190E (W201)"
     vin_suffix: Optional[str] = None
     year: Optional[int] = Field(default=None, ge=1983, le=1993)
-    engine_variant: Optional[str] = None        # e.g. 'M102_1.8', 'M103_2.3'
+    engine_variant: Optional[str] = None        # e.g. 'M102_1.8', 'M103_2.6'
     transmission_variant: Optional[str] = None  # e.g. 'MANUAL_717.4', 'AUTO_722.4'
     market: Optional[str] = None                # e.g. 'US', 'EU', 'DZ'
 

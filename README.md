@@ -28,7 +28,7 @@ pointer*, never a substitute for the source document. This holds true for every 
 angle, gap, and specification shown in the UI.
 
 - Verify **every** torque value against the original scan.
-- Confirm the **engine variant** (e.g. M102 1.8 vs M103 2.3) matches your car.
+- Confirm the **engine variant** (e.g. M102 1.8 vs M103 2.6) matches your car.
 - When in doubt, trust the printed manual over the app.
 
 ---

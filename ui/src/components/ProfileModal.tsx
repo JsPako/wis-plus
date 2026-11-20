@@ -17,9 +17,8 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { api, ApiError } from '@/api/client';
+import { useVariantOptions } from '@/hooks/useVariantOptions';
 import {
-  ENGINE_OPTIONS,
-  TRANSMISSION_OPTIONS,
   type ProfileOption,
   type VehicleProfile,
 } from '@/types/api';
@@ -73,6 +72,9 @@ function OptionRow({
 export default function ProfileModal({ visible, initialProfile, onClose, onSaved }: ProfileModalProps) {
   const [engine, setEngine] = useState<string>(initialProfile?.engine ?? 'ALL');
   const [transmission, setTransmission] = useState<string>(initialProfile?.transmission ?? 'ALL');
+  // Task 2.1: options come from shared/variants.json via GET /api/variants,
+  // with the built-in list as an offline-only fallback.
+  const { engines: engineOptions, gearboxes: gearboxOptions } = useVariantOptions();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -127,12 +129,12 @@ export default function ProfileModal({ visible, initialProfile, onClose, onSaved
           </Text>
 
           <Text style={styles.sectionLabel}>Engine</Text>
-          {ENGINE_OPTIONS.map((opt) => (
+          {engineOptions.map((opt) => (
             <OptionRow key={opt.value} option={opt} selected={engine === opt.value} onPress={() => setEngine(opt.value)} />
           ))}
 
           <Text style={[styles.sectionLabel, { marginTop: spacing.xl }]}>Transmission</Text>
-          {TRANSMISSION_OPTIONS.map((opt) => (
+          {gearboxOptions.map((opt) => (
             <OptionRow key={opt.value} option={opt} selected={transmission === opt.value} onPress={() => setTransmission(opt.value)} />
           ))}
 

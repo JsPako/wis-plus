@@ -40,6 +40,7 @@ from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from shared.models import TorqueSpecRow, load_json
+import shared.variants as variants
 from search_engine import HybridSearchEngine
 from theme_loader import ThemeFile, load_custom_themes, save_custom_theme
 
@@ -60,7 +61,7 @@ DEFAULT_PROFILE = {"engine": "ALL", "transmission": "ALL", "year": None,
 # everything is 'ALL' until the user explicitly configures their car.
 # ---------------------------------------------------------------------------
 class UserConfig(BaseModel):
-    engine: str = Field("ALL", min_length=1)          # e.g. 'M102_1.8', 'M103_2.3', 'ALL'
+    engine: str = Field("ALL", min_length=1)          # e.g. 'M102_1.8', 'M102_16V', 'ALL'
     transmission: str = Field("ALL", min_length=1)    # e.g. 'MANUAL_717.4', 'AUTO_722.4', 'ALL'
     year: Optional[int] = Field(None, ge=1983, le=1993)
     facelift: Optional[str] = Field(None, pattern="^(pre-facelift|facelift)$")
@@ -103,6 +104,17 @@ app.add_middleware(
 
 def _engine() -> HybridSearchEngine:
     return app.state.engine
+
+
+def _norm_variant(token):
+    """Resolve a variant token to its canonical id (shared/variants.json).
+
+    Legacy aliases (e.g. the old UI token ``M102_2.3_16V``) map to the stored
+    canonical id; unknown tokens and ``ALL`` pass through unchanged so a filter
+    is never silently widened to all (task 2.1)."""
+    if not token:
+        return token
+    return variants.normalize_variant(token) or token
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +177,15 @@ def post_profile(payload: UserConfig) -> UserConfig:
     return config
 
 
+@app.get("/api/variants")
+def get_variants() -> dict:
+    """Single source of truth for engine/gearbox options (task 2.1).
+
+    The UI loads its picker options from here at start-up and keeps a built-in
+    copy as an offline fallback only."""
+    return {"engines": variants.options("engine"), "gearboxes": variants.options("gearbox")}
+
+
 # ---------------------------------------------------------------------------
 # Theme engine (Task 7.5) — custom themes live in ./themes/*.json
 # ---------------------------------------------------------------------------
@@ -201,8 +222,8 @@ def directory(
     """Category -> Subcategory -> Procedure summaries, filtered by the active
     profile (query params override). Empty branches are omitted."""
     prof = _read_profile()
-    eng = engine or prof.engine
-    trans = transmission or prof.transmission
+    eng = _norm_variant(engine or prof.engine)
+    trans = _norm_variant(transmission or prof.transmission)
     return _engine().get_directory_tree(eng, trans)
 
 
@@ -222,8 +243,8 @@ def search(
     eng = _engine()
     results = eng.search(
         q,
-        engine_filter=engine,
-        transmission_filter=transmission,
+        engine_filter=_norm_variant(engine),
+        transmission_filter=_norm_variant(transmission),
         source_filter=source,
         limit=limit,
     )

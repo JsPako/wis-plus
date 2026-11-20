@@ -72,9 +72,9 @@ export const ENGINE_OPTIONS: readonly ProfileOption[] = [
   { label: 'M102 1.8 (102.910)', value: 'M102_1.8' },
   { label: 'M102 2.0 (102.962)', value: 'M102_2.0' },
   { label: 'M102 2.3 (102.985)', value: 'M102_2.3' },
-  { label: 'M102 2.3-16 / 2.5-16', value: 'M102_2.3_16V' },
+  { label: 'M102 2.3-16 / 2.5-16', value: 'M102_16V' },
   { label: 'M103 2.6', value: 'M103_2.6' },
-  { label: 'OM601 / OM602 Diesel', value: 'OM601_OM602' },
+  { label: 'OM601 / OM602 Diesel', value: 'OM601_602' },
 ];
 
 export const TRANSMISSION_OPTIONS: readonly ProfileOption[] = [

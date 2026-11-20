@@ -56,3 +56,10 @@ Summary: of the 13 sub-items, **2 fully fixed** (1.5a, 1.5b), **4 partly** (3.4,
 | 1.5 _step_words(rec) → step lists | done | 16dc12f | Three call sites passed ProcedureRecord to _step_words instead of its step lists. Fixed to rec.removal_steps + rec.installation_steps. |
 | 1.6 Tauri sidecar lifecycle | done | 2e66bb7 | Replaced system-python spawn with tauri-plugin-shell external binary. Health-check before spawn, log file in app data dir, WISPLUS_DATA_DIR env var, port-in-use message, kill-on-exit. build_sidecar.sh/.ps1 added. UI: first-run screen + Settings 'Open Data Folder' button. |
 | 1.7 setup_arch.sh --target → --bundles | done | 0c0058f | BUNDLE_TARGET holds appimage/deb/rpm (bundle formats) but was passed to --target (expects Rust triple). Changed to --bundles. |
+
+## Phase 2 — one source of truth for variants, and a schema that can carry warnings
+
+| Task | Status | Commit | Notes |
+|------|--------|--------|-------|
+| 2.0 (pre-existing) window.__TAURI__ undeclared | done | tauri.d.ts commit | Phase 1 task 1.6 added window.__TAURI__.shell.open() in SettingsView with no type declaration, so `npx tsc --noEmit` was red before any Phase 2 work. Added ui/src/types/tauri.d.ts declaring the narrow __TAURI__ surface actually used. Not a 2.x behaviour change — surfaced while running the Phase 2 tsc check. |
+| 2.1 Engine/gearbox vocabulary → shared/variants.json | done | (this commit) | Single source of truth: shared/variants.json (id/label/kind/aliases). Removed phantom M103 2.3 from README, shared/models.py comments and docs/decisions.md D1; added tests that fail if the text reappears in tracked source/docs, and a test that fails if a UI option id is missing from the file. Backend /api/profile + _norm_variant and the UI built-in options now use canonical ids (M102_16V, OM601_602); forge VLM prompt text updated to match. Added GET /api/variants; UI loads options from it via ui/src/hooks/useVariantOptions() with the built-in list as an offline-only fallback. NOTE: rewiring forge's _clean_variants allowed-set to load from variants.json is carried into 2.2 (which rewrites that function). |
