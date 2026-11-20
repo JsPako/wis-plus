@@ -1,19 +1,15 @@
 /**
- * WIS+ — entry point (Task 8).
+ * WIS+ — entry point.
  *
  * React Native (Web) runs inside the Tauri v2 webview; `react-native` is aliased
- * to `react-native-web` in vite.config.ts. The default RNW stylesheet injects
- * box-sizing / user-select rules the components rely on.
+ * to `react-native-web` in vite.config.ts.
  */
 
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import defaults from 'react-native-web/dist/cjs/exports/defaults';
-import { injectIntoGlobalCSS } from 'react-native-web';
 
+import './global.css';
 import App from '@/App';
-
-injectIntoGlobalCSS(defaults);
 
 const container = document.getElementById('root');
 if (!container) {

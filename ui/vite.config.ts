@@ -14,12 +14,11 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: {
-      // Exact-match alias so `import ... from 'react-native'` hits RNW,
-      // while deep imports (`react-native/Libraries/...`) stay untouched.
-      'react-native$': 'react-native-web',
-      '@': path.resolve(__dirname, 'src'),
-    },
+    alias: [
+      // Exact-match: `import ... from 'react-native'` → our shim (RNW + native stubs).
+      { find: /^react-native$/, replacement: path.resolve(__dirname, 'src/shims/react-native.ts') },
+      { find: '@', replacement: path.resolve(__dirname, 'src') },
+    ],
   },
   optimizeDeps: {
     include: ['react-native-web'],

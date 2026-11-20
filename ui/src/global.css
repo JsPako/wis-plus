@@ -1,0 +1,17 @@
+/* WIS+ — minimal global reset for the Tauri webview.
+ * Replaces the react-native-web defaults injection (which does not exist
+ * in react-native-web 0.19.x). */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
