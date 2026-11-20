@@ -263,6 +263,23 @@ def search(
 # ---------------------------------------------------------------------------
 # Procedure detail
 # ---------------------------------------------------------------------------
+def _safe_torque_rows(eng, procedure_id: int) -> list[dict]:
+    """Task 2.5 — serialize a procedure's torque rows with per-row resilience.
+
+    One row with a degenerate bbox (or any other malformed field) must not
+    500 the whole page: bad rows are skipped and logged, good rows survive."""
+    rows: list[dict] = []
+    for t in eng.get_torque_specs(procedure_id):
+        try:
+            rows.append(TorqueSpecRow(**t).to_nested().model_dump())
+        except Exception as exc:  # noqa: BLE001 - per-row resilience by design
+            log.warning(
+                "procedure %d: skipping malformed torque row id=%r (%s)",
+                procedure_id, t.get("id"), exc,
+            )
+    return rows
+
+
 @app.get("/api/procedures/{procedure_id}")
 def procedure_detail(procedure_id: int) -> dict:
     """Full procedure: separated removal/installation steps, tools, tips and
@@ -273,7 +290,7 @@ def procedure_detail(procedure_id: int) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail=f"procedure {procedure_id} not found")
 
-    torque_rows = [TorqueSpecRow(**t).to_nested().model_dump() for t in eng.get_torque_specs(procedure_id)]
+    torque_rows = _safe_torque_rows(eng, procedure_id)
 
     return {
         "id": row["id"],
